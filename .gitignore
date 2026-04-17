@@ -23,3 +23,6 @@ coverage.*
 
 # Claude Code harness config — machine-local, not portable.
 .claude/
+
+# Per-session handoff notes for the next agent — local only.
+HANDOFF.md
