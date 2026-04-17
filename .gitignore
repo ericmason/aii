@@ -1,0 +1,25 @@
+# Built binary — `go build` drops it in cwd.
+/aii
+
+# Go build & test artifacts
+/dist/
+/build/
+*.test
+*.out
+coverage.*
+
+# Local SQLite DBs — must never ship a real user's transcript index.
+*.db
+*.db-wal
+*.db-shm
+
+# Logs
+*.log
+
+# OS / editor cruft
+.DS_Store
+*.swp
+*~
+
+# Claude Code harness config — machine-local, not portable.
+.claude/

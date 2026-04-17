@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>aii — search local AI chats</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-row">
+    <a class="brand" href="/">
+      <span class="brand-mark">⌬</span>
+      <span class="brand-word">aii</span>
+    </a>
+    <form id="search-form" class="search" autocomplete="off">
+      <label class="search-field" id="search-field">
+        <span class="search-icon" aria-hidden="true">⌕</span>
+        <span class="spinner" aria-hidden="true"></span>
+        <input id="q" type="search" placeholder="search your AI chats…" autofocus>
+      </label>
+      <select id="agent" aria-label="Agent filter">
+        <option value="">all agents</option>
+        <option value="claude_code">Claude Code</option>
+        <option value="codex">Codex</option>
+        <option value="cursor">Cursor</option>
+      </select>
+      <input id="since" type="text" placeholder="7d / 2026-01-01" aria-label="Since">
+    </form>
+  </div>
+  <p id="stats" class="stats"></p>
+  <div id="progress" class="progress" aria-hidden="true"><span></span></div>
+</header>
+
+<main>
+  <section id="results" aria-live="polite"></section>
+  <p id="empty" class="empty" hidden>Start typing to search across every local AI chat.</p>
+</main>
+
+<div id="preview" class="preview" hidden>
+  <button id="close-preview" aria-label="Close">×</button>
+  <div class="preview-shell">
+    <header class="preview-head" id="preview-head"></header>
+    <article id="preview-body" class="preview-body"></article>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
