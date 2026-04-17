@@ -1,5 +1,6 @@
 # aii — search every AI chat you've had locally
 
+[![CI](https://github.com/ericmason/aii/actions/workflows/ci.yml/badge.svg)](https://github.com/ericmason/aii/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 `aii` indexes every conversation from your local AI coding agents into a
