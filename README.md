@@ -286,6 +286,27 @@ aii help --json
 
 See `AGENTS.md` for a condensed agent-facing manual with call patterns.
 
+### Claude Code skill
+
+This repo ships a Claude Code skill at `skills/aii/SKILL.md` that
+teaches the agent when to search, the chain pattern (`search` →
+`get_session`), cite-token grammar, and the query idioms that actually
+work. Install it once:
+
+```sh
+# user-wide (all projects)
+mkdir -p ~/.claude/skills
+cp -R skills/aii ~/.claude/skills/aii
+
+# or per-project
+mkdir -p .claude/skills
+cp -R skills/aii .claude/skills/aii
+```
+
+Claude Code auto-loads skills on startup and will trigger this one
+whenever the user says "remember when…", "last time…", "how did I
+fix…", etc. Pairs with either the MCP server or the CLI.
+
 ## Configuration
 
 Environment variables:
