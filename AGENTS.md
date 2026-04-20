@@ -157,6 +157,7 @@ internal/source/claudecode
 internal/source/codex
 internal/source/cursor
 internal/indexer/        # orchestrates Sources → single writer goroutine
+internal/redact/         # regex-based secret scrubber used by the indexer
 internal/store/          # sqlite schema, hybrid FTS search, migrations
 internal/web/            # local HTTP UI + assets (embed.FS)
 internal/tui/            # bubbletea two-pane UI
@@ -229,6 +230,16 @@ listing time. When adding or changing a tool:
 
 Both `structuredContent` and a text fallback must be set. Use
 `mcp.NewToolResultStructured(payload, fallback)`.
+
+### Redaction
+
+`internal/redact` holds the secret patterns. The indexer applies them to
+every message's content (and session title/summary) before writing,
+unless the user passes `aii index --no-redact`. `--redact-sources` also
+rewrites the JSONL transcript files in place — Cursor's SQLite store is
+skipped. If you add a new secret shape, keep the placeholder pure ASCII
+and free of `"` or `\` so running the pattern over a raw JSONL line
+still leaves a parseable document.
 
 ### What to avoid
 

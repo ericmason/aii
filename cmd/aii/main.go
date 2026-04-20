@@ -36,6 +36,7 @@ const usageText = `aii — search every AI chat you've had locally
 
 Usage:
   aii index   [--source all|cc|codex|cursor] [--full] [--verbose]
+               [--no-redact] [--redact-sources]
   aii search  <query> [--agent cc|codex|cursor] [--workspace DIR]
                        [--since 7d|2026-01-01] [--limit 20] [--json]
   aii show    <session-uid> | --last [--format md|plain]
@@ -117,6 +118,8 @@ func cmdIndex(ctx context.Context, args []string) error {
 	full := fs.Bool("full", false, "reindex from scratch")
 	verbose := fs.Bool("verbose", false, "log each session indexed")
 	quiet := fs.Bool("quiet", false, "suppress the summary line (used by background spawns)")
+	noRedact := fs.Bool("no-redact", false, "do not scrub common secret shapes (api keys, tokens, PEM blocks) before indexing")
+	redactSources := fs.Bool("redact-sources", false, "also rewrite the original JSONL transcripts with redacted content (destructive; JSONL sources only)")
 	fs.Parse(reorderFlags(args))
 
 	// One indexer at a time. Cron + manual + background-spawned runs
@@ -141,7 +144,21 @@ func cmdIndex(ctx context.Context, args []string) error {
 		return err
 	}
 
-	stats, err := indexer.Run(ctx, db, sources, indexer.Options{Full: *full, Verbose: *verbose})
+	if *redactSources {
+		n, err := redactSourceFiles(sources, *verbose)
+		if err != nil {
+			return fmt.Errorf("redact sources: %w", err)
+		}
+		if !*quiet {
+			fmt.Printf("redacted %d source file%s\n", n, pluralS(n))
+		}
+	}
+
+	stats, err := indexer.Run(ctx, db, sources, indexer.Options{
+		Full:    *full,
+		Verbose: *verbose,
+		Redact:  !*noRedact,
+	})
 	if err != nil {
 		return err
 	}
@@ -995,7 +1012,10 @@ func cmdHelpJSON() error {
 		OutputModes:     []string{"pretty", "json", "ndjson"},
 		Env:             []string{"AII_DB", "AII_AGENT", "AII_ASK_CMD", "NO_COLOR", "FORCE_COLOR"},
 		Commands: []cmdInfo{
-			{"index", "Scan agent directories and update the FTS index", "aii index [--source all|cc|codex|cursor] [--full] [--verbose]", nil},
+			{"index", "Scan agent directories and update the FTS index", "aii index [--source all|cc|codex|cursor] [--full] [--verbose] [--no-redact] [--redact-sources]", []flagInfo{
+				{"--no-redact", "", "disable the default pass that scrubs API keys, tokens, and PEM blocks from indexed content"},
+				{"--redact-sources", "", "also rewrite the original JSONL transcripts in place with redacted content (destructive; JSONL sources only)"},
+			}},
 			{"search", "Hybrid (porter + trigram) full-text search over all transcripts", "aii search <query> [--agent ..] [--workspace ..] [--role ..] [--since ..] [--limit 20] [--offset 0] [--json|--ndjson|--pretty] [--max-bytes N]", []flagInfo{
 				{"--role", "", "filter messages by speaker role (user|assistant|tool|thinking)"},
 				{"--offset", "0", "skip N results — use with --limit for pagination"},
@@ -1227,7 +1247,9 @@ func truncate(s string, n int) string {
 func reorderFlags(in []string) []string {
 	boolFlags := map[string]bool{"--json": true, "-json": true, "--full": true, "-full": true,
 		"--verbose": true, "-verbose": true, "--last": true, "-last": true,
-		"--dry-run": true, "-dry-run": true, "--show-sources": true, "-show-sources": true}
+		"--dry-run": true, "-dry-run": true, "--show-sources": true, "-show-sources": true,
+		"--no-redact": true, "-no-redact": true, "--redact-sources": true, "-redact-sources": true,
+		"--quiet": true, "-quiet": true}
 	var flags, rest []string
 	for i := 0; i < len(in); i++ {
 		a := in[i]

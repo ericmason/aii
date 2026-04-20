@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ericmason/aii/internal/redact"
 	"github.com/ericmason/aii/internal/source"
 	"github.com/ericmason/aii/internal/store"
 )
@@ -15,6 +16,10 @@ import (
 type Options struct {
 	Full    bool
 	Verbose bool
+	// Redact controls whether message content is scrubbed of known
+	// secret shapes on its way into the DB. Defaults to true; callers
+	// opt out explicitly with --no-redact.
+	Redact bool
 }
 
 type Stats struct {
@@ -54,6 +59,9 @@ func Run(ctx context.Context, db *store.DB, sources []source.Source, opt Options
 	go func() { wg.Wait(); close(ch) }()
 
 	for b := range ch {
+		if opt.Redact {
+			redactBatch(&b)
+		}
 		if err := apply(db, b, opt.Verbose); err != nil {
 			log.Printf("apply batch for %s: %v", b.State.SourcePath, err)
 			stats.Errors++
@@ -106,6 +114,17 @@ func apply(db *store.DB, b source.Batch, verbose bool) error {
 			b.Session.Agent, shortUID(b.Session.UID), len(b.Messages), b.Session.Workspace)
 	}
 	return nil
+}
+
+// redactBatch scrubs secrets out of every user-visible text field before
+// it hits the DB. Session metadata (title/summary) is covered too, since
+// a pasted secret can end up there via the auto-derived title.
+func redactBatch(b *source.Batch) {
+	b.Session.Title = redact.Redact(b.Session.Title)
+	b.Session.Summary = redact.Redact(b.Session.Summary)
+	for i := range b.Messages {
+		b.Messages[i].Content = redact.Redact(b.Messages[i].Content)
+	}
 }
 
 func shortUID(s string) string {

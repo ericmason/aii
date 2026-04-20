@@ -59,6 +59,7 @@ machine-readable schema (commands, flags, cite-token grammar).
 
 ```
 aii index [--source all|cc|codex|cursor] [--full] [--verbose]
+          [--no-redact] [--redact-sources]
 ```
 
 Each source parses its own format and emits batches of
@@ -69,6 +70,17 @@ per-session transactions.
 
 Incremental by default; `--full` wipes state and reindexes. `--verbose`
 logs each session as it's written and runs an `ANALYZE` at the end.
+
+**Redaction.** By default, common secret shapes (Anthropic/OpenAI/GitHub
+tokens, AWS access keys, JWTs, PEM-armored private keys, passwords in
+URLs, Authorization headers, …) are scrubbed out of message content
+*before* it lands in the index, replaced with `[REDACTED:<label>]`.
+Pass `--no-redact` to keep raw content. Pass `--redact-sources` to also
+rewrite the underlying transcript files in place — this is destructive
+and only touches JSONL sources (Claude Code + Codex); Cursor's SQLite
+store is skipped. The list of patterns lives in
+[`internal/redact/redact.go`](internal/redact/redact.go); add to it if
+your workflow has a proprietary token shape.
 
 ### `aii search` — hybrid full-text search
 
