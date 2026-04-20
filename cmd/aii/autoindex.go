@@ -26,6 +26,27 @@ func dataDir() string { return filepath.Dir(store.DefaultPath()) }
 func lockPath() string  { return filepath.Join(dataDir(), ".index.lock") }
 func stampPath() string { return filepath.Join(dataDir(), ".last-index") }
 
+// warnStaleAfter is the grace period before query commands nag the
+// user about a stale index. Cron default is 5 min, so a healthy install
+// stamps well under this threshold; 30 min means something's off.
+const warnStaleAfter = 30 * time.Minute
+
+// warnIfIndexStale writes a one-line hint to stderr when the stamp file
+// is missing or older than warnStaleAfter. Read-only — safe to call
+// from any query-path command. Stays silent on healthy installs.
+func warnIfIndexStale() {
+	info, err := os.Stat(stampPath())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "aii: index has not been built yet — run `aii index` (or `aii cron install` for automatic updates)")
+		return
+	}
+	age := time.Since(info.ModTime())
+	if age <= warnStaleAfter {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "aii: index is %s stale — run `aii index` (or `aii cron install` for automatic updates)\n", humanDuration(age))
+}
+
 // markIndexed touches the stamp file. Called by cmdIndex on success.
 func markIndexed() {
 	_ = os.MkdirAll(dataDir(), 0o755)

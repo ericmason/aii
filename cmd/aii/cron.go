@@ -186,6 +186,31 @@ func cronStatus() error {
 	}
 }
 
+// cronInstallStatus reports whether a scheduler entry is registered
+// for aii and identifies the backend ("LaunchAgent" / "Task Scheduler"
+// / "crontab") so doctor can print a clean status line. Empty second
+// return value when not installed.
+func cronInstallStatus() (bool, string) {
+	switch runtime.GOOS {
+	case "darwin":
+		if _, err := os.Stat(launchdPlistPath()); err == nil {
+			return true, "LaunchAgent"
+		}
+		return false, ""
+	case "windows":
+		if err := exec.Command("schtasks", "/Query", "/TN", schtasksTaskName).Run(); err == nil {
+			return true, "Task Scheduler"
+		}
+		return false, ""
+	default:
+		cur, _ := readCrontab()
+		if strings.Contains(cur, cronTagMarker) {
+			return true, "crontab"
+		}
+		return false, ""
+	}
+}
+
 // --- launchd (macOS) ---------------------------------------------------
 
 func launchdPlistPath() string {

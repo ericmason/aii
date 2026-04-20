@@ -226,6 +226,8 @@ func cmdSearch(args []string) error {
 	}
 	q := strings.Join(fs.Args(), " ")
 
+	warnIfIndexStale()
+
 	sinceUnix, err := parseSince(*since)
 	if err != nil {
 		return err
@@ -470,6 +472,8 @@ func cmdAsk(ctx context.Context, args []string) error {
 	}
 	question := strings.Join(fs.Args(), " ")
 
+	warnIfIndexStale()
+
 	sinceUnix, err := parseSince(*since)
 	if err != nil {
 		return err
@@ -625,6 +629,8 @@ func cmdShow(args []string) error {
 	maxMsgChars := fs.Int("max-msg-chars", 0, "truncate each message's content to this many chars (0 = no cap)")
 	maxBytes := fs.Int("max-bytes", 0, "soft cap on total output bytes (0 = no cap)")
 	fs.Parse(reorderFlags(args))
+
+	warnIfIndexStale()
 
 	db, err := store.Open(store.DefaultPath())
 	if err != nil {
@@ -855,6 +861,8 @@ func cmdRelated(args []string) error {
 		return errors.New("related requires a session UID")
 	}
 
+	warnIfIndexStale()
+
 	db, err := store.Open(store.DefaultPath())
 	if err != nil {
 		return err
@@ -1042,6 +1050,8 @@ func cmdServe(ctx context.Context, args []string) error {
 	addr := fs.String("addr", "127.0.0.1:8723", "listen address")
 	fs.Parse(reorderFlags(args))
 
+	warnIfIndexStale()
+
 	db, err := store.Open(store.DefaultPath())
 	if err != nil {
 		return err
@@ -1060,6 +1070,8 @@ func cmdMCP(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
 	fs.Parse(reorderFlags(args))
 
+	warnIfIndexStale()
+
 	db, err := store.Open(store.DefaultPath())
 	if err != nil {
 		return err
@@ -1077,6 +1089,8 @@ func cmdUI(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("ui", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:8723", "listen address")
 	fs.Parse(reorderFlags(args))
+
+	warnIfIndexStale()
 
 	db, err := store.Open(store.DefaultPath())
 	if err != nil {
@@ -1117,6 +1131,8 @@ func openBrowser(url string) error {
 // --- tui ---------------------------------------------------------------
 
 func cmdTUI(_ context.Context, _ []string) error {
+	warnIfIndexStale()
+
 	db, err := store.Open(store.DefaultPath())
 	if err != nil {
 		return err
@@ -1158,6 +1174,18 @@ func cmdDoctor() error {
 		for _, s := range ss {
 			fmt.Printf("  %-12s  %d sessions, %d messages\n", s.Agent, s.Sessions, s.Messages)
 		}
+	}
+
+	fmt.Println("Freshness:")
+	if stamp, err := os.Stat(stampPath()); err == nil {
+		fmt.Printf("  last indexed %s ago\n", humanDuration(time.Since(stamp.ModTime())))
+	} else {
+		fmt.Println("  never indexed — run `aii index` to build the database")
+	}
+	if installed, backend := cronInstallStatus(); installed {
+		fmt.Printf("  cron: installed (%s)\n", backend)
+	} else {
+		fmt.Println("  cron: not installed — run `aii cron install` for automatic updates")
 	}
 	return nil
 }
