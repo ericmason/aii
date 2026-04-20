@@ -257,11 +257,6 @@ func buildLaunchdPlist(exe string, intervalSeconds int) string {
   <string>%s</string>
   <key>StandardErrorPath</key>
   <string>%s</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>AII_NO_AUTO_INDEX</key>
-    <string>1</string>
-  </dict>
 </dict>
 </plist>
 `, launchdLabel, exe, intervalSeconds, logPath, logPath)
@@ -365,17 +360,17 @@ func cronLine(exe string, intervalSeconds int) (string, error) {
 	}
 	logPath := filepath.Join(dataDir(), "cron.log")
 	if mins == 1 {
-		return fmt.Sprintf("* * * * * AII_NO_AUTO_INDEX=1 %s index --quiet >> %s 2>&1", exe, logPath), nil
+		return fmt.Sprintf("* * * * * %s index --quiet >> %s 2>&1", exe, logPath), nil
 	}
 	if 60%mins == 0 {
-		return fmt.Sprintf("*/%d * * * * AII_NO_AUTO_INDEX=1 %s index --quiet >> %s 2>&1", mins, exe, logPath), nil
+		return fmt.Sprintf("*/%d * * * * %s index --quiet >> %s 2>&1", mins, exe, logPath), nil
 	}
 	// Non-divisor of 60 (e.g. 7m): use closest divisor that doesn't lie
 	// about cadence. Cron's */N skips the 60-min boundary, which is fine
 	// for "occasional indexing" — pick the nearest divisor.
 	chosen := nearestDivisor(60, mins)
 	fmt.Fprintf(os.Stderr, "warning: %dm doesn't divide 60 — using */%d for an even cadence\n", mins, chosen)
-	return fmt.Sprintf("*/%d * * * * AII_NO_AUTO_INDEX=1 %s index --quiet >> %s 2>&1", chosen, exe, logPath), nil
+	return fmt.Sprintf("*/%d * * * * %s index --quiet >> %s 2>&1", chosen, exe, logPath), nil
 }
 
 func nearestDivisor(n, target int) int {

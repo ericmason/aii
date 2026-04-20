@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 // withTempDataDir points dataDir() at a fresh temp dir by overriding
@@ -17,48 +16,15 @@ func withTempDataDir(t *testing.T) string {
 	return dir
 }
 
-func TestAutoIndexDisabled(t *testing.T) {
-	cases := []struct {
-		val  string
-		want bool
-	}{
-		{"", false},
-		{"0", false},
-		{"false", false},
-		{"False", false},
-		{"1", true},
-		{"true", true},
-		{"anything-nonempty", true},
-	}
-	for _, c := range cases {
-		t.Setenv("AII_NO_AUTO_INDEX", c.val)
-		if got := autoIndexDisabled(); got != c.want {
-			t.Errorf("AII_NO_AUTO_INDEX=%q -> %v, want %v", c.val, got, c.want)
-		}
-	}
-}
-
-func TestIndexStale(t *testing.T) {
+func TestMarkIndexed(t *testing.T) {
 	withTempDataDir(t)
 
-	// No stamp → stale.
-	if !indexStale() {
-		t.Fatal("no stamp should be stale")
+	if _, err := os.Stat(stampPath()); !os.IsNotExist(err) {
+		t.Fatalf("stamp should not exist yet, stat err = %v", err)
 	}
-
-	// Fresh stamp → not stale.
 	markIndexed()
-	if indexStale() {
-		t.Fatal("fresh stamp should not be stale")
-	}
-
-	// Ancient stamp → stale. mtime 1h ago beats 60s threshold.
-	old := time.Now().Add(-1 * time.Hour)
-	if err := os.Chtimes(stampPath(), old, old); err != nil {
-		t.Fatalf("chtimes: %v", err)
-	}
-	if !indexStale() {
-		t.Fatal("old stamp should be stale")
+	if _, err := os.Stat(stampPath()); err != nil {
+		t.Fatalf("stamp should exist after markIndexed: %v", err)
 	}
 }
 

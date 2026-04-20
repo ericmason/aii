@@ -226,8 +226,6 @@ func cmdSearch(args []string) error {
 	}
 	q := strings.Join(fs.Args(), " ")
 
-	kickBackgroundIndex()
-
 	sinceUnix, err := parseSince(*since)
 	if err != nil {
 		return err
@@ -472,8 +470,6 @@ func cmdAsk(ctx context.Context, args []string) error {
 	}
 	question := strings.Join(fs.Args(), " ")
 
-	kickBackgroundIndex()
-
 	sinceUnix, err := parseSince(*since)
 	if err != nil {
 		return err
@@ -629,8 +625,6 @@ func cmdShow(args []string) error {
 	maxMsgChars := fs.Int("max-msg-chars", 0, "truncate each message's content to this many chars (0 = no cap)")
 	maxBytes := fs.Int("max-bytes", 0, "soft cap on total output bytes (0 = no cap)")
 	fs.Parse(reorderFlags(args))
-
-	kickBackgroundIndex()
 
 	db, err := store.Open(store.DefaultPath())
 	if err != nil {
@@ -861,8 +855,6 @@ func cmdRelated(args []string) error {
 		return errors.New("related requires a session UID")
 	}
 
-	kickBackgroundIndex()
-
 	db, err := store.Open(store.DefaultPath())
 	if err != nil {
 		return err
@@ -1050,8 +1042,6 @@ func cmdServe(ctx context.Context, args []string) error {
 	addr := fs.String("addr", "127.0.0.1:8723", "listen address")
 	fs.Parse(reorderFlags(args))
 
-	kickBackgroundIndex()
-
 	db, err := store.Open(store.DefaultPath())
 	if err != nil {
 		return err
@@ -1070,24 +1060,6 @@ func cmdMCP(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
 	fs.Parse(reorderFlags(args))
 
-	// Long-lived process — kick once at startup, then keep refreshing
-	// in the background so search results stay current for whatever
-	// agent is using us. The kick is non-blocking; the ticker just
-	// re-checks periodically.
-	kickBackgroundIndex()
-	go func() {
-		t := time.NewTicker(5 * time.Minute)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				kickBackgroundIndex()
-			}
-		}
-	}()
-
 	db, err := store.Open(store.DefaultPath())
 	if err != nil {
 		return err
@@ -1105,8 +1077,6 @@ func cmdUI(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("ui", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:8723", "listen address")
 	fs.Parse(reorderFlags(args))
-
-	kickBackgroundIndex()
 
 	db, err := store.Open(store.DefaultPath())
 	if err != nil {
@@ -1147,8 +1117,6 @@ func openBrowser(url string) error {
 // --- tui ---------------------------------------------------------------
 
 func cmdTUI(_ context.Context, _ []string) error {
-	kickBackgroundIndex()
-
 	db, err := store.Open(store.DefaultPath())
 	if err != nil {
 		return err
