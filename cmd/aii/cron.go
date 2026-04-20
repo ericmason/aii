@@ -7,6 +7,10 @@ package main
 // launchd is preferred over crontab on macOS because it survives sleep,
 // runs at login, and reschedules cleanly.
 //
+// Windows: registers a Task Scheduler task via `schtasks.exe /Create`.
+// Output isn't redirected — Task Scheduler keeps its own run history in
+// Event Viewer and `aii cron status` surfaces the job state.
+//
 // Linux/other: appends a single line to the user's crontab. The line is
 // tagged with a marker comment so we can find/remove it idempotently.
 
@@ -78,8 +82,10 @@ func humanDuration(d time.Duration) string {
 }
 
 const (
-	launchdLabel  = "com.aii.index"
-	cronTagMarker = "# aii auto-index"
+	launchdLabel      = "com.aii.index"
+	cronTagMarker     = "# aii auto-index"
+	schtasksTaskName  = "aii-index"
+	schtasksMaxMinute = 1439 // schtasks /SC MINUTE /MO cap (<24h)
 )
 
 func cmdCron(args []string) error {
@@ -114,8 +120,10 @@ Usage:
   aii cron status
   aii cron run        # one-off manual run (same as 'aii index --quiet')
 
-On macOS this manages a LaunchAgent at ~/Library/LaunchAgents/com.aii.index.plist.
-On Linux it appends a tagged line to your user crontab.
+Per-platform mechanism:
+  macOS    LaunchAgent at ~/Library/LaunchAgents/com.aii.index.plist
+  Windows  Task Scheduler task "aii-index" (via schtasks.exe)
+  Linux    a tagged line in your user crontab
 `)
 	return nil
 }
@@ -133,17 +141,25 @@ func cronInstall(args []string) error {
 	if err != nil {
 		return err
 	}
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		return installLaunchd(exe, intervalSeconds)
+	case "windows":
+		return installSchtasks(exe, intervalSeconds)
+	default:
+		return installCrontab(exe, intervalSeconds)
 	}
-	return installCrontab(exe, intervalSeconds)
 }
 
 func cronUninstall() error {
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		return uninstallLaunchd()
+	case "windows":
+		return uninstallSchtasks()
+	default:
+		return uninstallCrontab()
 	}
-	return uninstallCrontab()
 }
 
 func cronStatus() error {
@@ -160,10 +176,14 @@ func cronStatus() error {
 	} else {
 		fmt.Println("Lock:  free")
 	}
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		return statusLaunchd()
+	case "windows":
+		return statusSchtasks()
+	default:
+		return statusCrontab()
 	}
-	return statusCrontab()
 }
 
 // --- launchd (macOS) ---------------------------------------------------
@@ -262,7 +282,70 @@ func buildLaunchdPlist(exe string, intervalSeconds int) string {
 `, launchdLabel, exe, intervalSeconds, logPath, logPath)
 }
 
-// --- crontab (non-darwin) ----------------------------------------------
+// --- schtasks (Windows) ------------------------------------------------
+
+// installSchtasks registers a Task Scheduler task that runs
+// `aii index --quiet` every N minutes. schtasks /SC MINUTE caps /MO at
+// 1439 (<24h); longer intervals are clamped and warned about so the
+// install never silently lies about cadence.
+func installSchtasks(exe string, intervalSeconds int) error {
+	mins := intervalSeconds / 60
+	if mins < 1 {
+		fmt.Fprintln(os.Stderr, "warning: schtasks can't go sub-minute; rounding to 1m")
+		mins = 1
+	}
+	if mins > schtasksMaxMinute {
+		fmt.Fprintf(os.Stderr, "warning: %dm exceeds schtasks /SC MINUTE cap; capping at %dm\n", mins, schtasksMaxMinute)
+		mins = schtasksMaxMinute
+	}
+	// /TR takes a single command string. Quote the exe so paths with
+	// spaces (e.g. "C:\Program Files\aii\aii.exe") parse correctly.
+	action := fmt.Sprintf(`"%s" index --quiet`, exe)
+	out, err := exec.Command("schtasks",
+		"/Create", "/F",
+		"/SC", "MINUTE",
+		"/MO", strconv.Itoa(mins),
+		"/TN", schtasksTaskName,
+		"/TR", action,
+		"/RL", "LIMITED",
+	).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("schtasks /Create: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	fmt.Printf("installed: Task Scheduler task %q\n", schtasksTaskName)
+	fmt.Printf("interval:  every %d minute(s)\n", mins)
+	fmt.Printf("inspect:   schtasks /Query /TN %s /V /FO LIST\n", schtasksTaskName)
+	return nil
+}
+
+func uninstallSchtasks() error {
+	out, err := exec.Command("schtasks", "/Delete", "/F", "/TN", schtasksTaskName).CombinedOutput()
+	if err != nil {
+		// Most common cause: task doesn't exist. Print the schtasks
+		// message verbatim rather than guessing — it's localized and
+		// self-explanatory.
+		fmt.Printf("not installed (or uninstall failed): %s\n", strings.TrimSpace(string(out)))
+		return nil
+	}
+	fmt.Println("uninstalled")
+	return nil
+}
+
+func statusSchtasks() error {
+	out, err := exec.Command("schtasks", "/Query", "/TN", schtasksTaskName, "/V", "/FO", "LIST").CombinedOutput()
+	if err != nil {
+		fmt.Println("Cron:  not installed (run `aii cron install`)")
+		return nil
+	}
+	fmt.Printf("Cron:  installed as Task Scheduler task %q\n", schtasksTaskName)
+	fmt.Println("Job:")
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		fmt.Printf("  %s\n", line)
+	}
+	return nil
+}
+
+// --- crontab (non-darwin, non-windows) ---------------------------------
 
 func installCrontab(exe string, intervalSeconds int) error {
 	cur, err := readCrontab()
