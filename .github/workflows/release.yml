@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binaries
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          version="${GITHUB_REF_NAME}"
+          for pair in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
+            os="${pair%/*}"
+            arch="${pair#*/}"
+            name="aii-${version}-${os}-${arch}"
+            stage="dist/${name}"
+            mkdir -p "${stage}"
+            GOOS="${os}" GOARCH="${arch}" CGO_ENABLED=0 \
+              go build -trimpath -ldflags "-s -w" -o "${stage}/aii" ./cmd/aii
+            cp README.md LICENSE "${stage}/"
+            tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+            rm -rf "${stage}"
+          done
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" \
+            dist/*.tar.gz dist/SHA256SUMS --clobber
