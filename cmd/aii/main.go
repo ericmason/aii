@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -809,7 +810,14 @@ func cmdShow(args []string) error {
 		if fs.NArg() == 0 {
 			return errors.New("show requires a session UID or --last")
 		}
-		session, err = db.SessionByUIDAny(fs.Arg(0))
+		uid, ordFromCite := parseSessionRef(fs.Arg(0))
+		// Honor the documented round-trip: a cite token's trailing
+		// :<ordinal> becomes the implicit anchor when no slice flag was
+		// given explicitly.
+		if ordFromCite >= 0 && *around < 0 && *from < 0 && *to < 0 {
+			*around = ordFromCite
+		}
+		session, err = db.SessionByUIDAny(uid)
 	}
 	if err != nil {
 		return err
@@ -1033,7 +1041,8 @@ func cmdRelated(args []string) error {
 	}
 	defer db.Close()
 
-	src, err := db.SessionByUIDAny(fs.Arg(0))
+	uid, _ := parseSessionRef(fs.Arg(0))
+	src, err := db.SessionByUIDAny(uid)
 	if err != nil {
 		return err
 	}
@@ -1396,6 +1405,28 @@ func shortUID(uid string) string {
 		return uid
 	}
 	return uid[:8]
+}
+
+// parseSessionRef accepts a bare uid (full or 8-char short) or a cite
+// token like "cc/abc12345:42" and returns (uid, ordinal). Ordinal is
+// -1 when the ref didn't carry one. The agent prefix is informational
+// only — SessionByUIDAny looks up by uid.
+func parseSessionRef(ref string) (string, int) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", -1
+	}
+	if i := strings.Index(ref, "/"); i >= 0 {
+		ref = ref[i+1:]
+	}
+	ordinal := -1
+	if i := strings.LastIndex(ref, ":"); i >= 0 {
+		if n, err := strconv.Atoi(ref[i+1:]); err == nil {
+			ordinal = n
+			ref = ref[:i]
+		}
+	}
+	return ref, ordinal
 }
 
 func truncate(s string, n int) string {
