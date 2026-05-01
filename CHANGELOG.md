@@ -8,6 +8,20 @@ called out under **Changed** when they happen.
 
 ## [Unreleased]
 
+### Added
+- `aii search`, `aii sessions`, and `aii related` now accept
+  `--format pretty|json|ndjson` as an alternative to the
+  `--pretty`/`--json`/`--ndjson` boolean flags.
+- `aii show` now accepts `--ndjson`, `--json`, and `--pretty` boolean
+  flags as aliases for `--format ndjson` / `--format ndjson` /
+  `--format md`. `aii show <cite> --ndjson` no longer errors with
+  `flag provided but not defined: -ndjson`.
+
+### Changed
+- `aii show --format` also tolerates `pretty`/`human` (→ `md`) and
+  `json` (→ `ndjson`) so chained `search → show` works regardless of
+  which format vocabulary the caller reaches for.
+
 ## [0.4.2] - 2026-05-01
 
 ### Fixed

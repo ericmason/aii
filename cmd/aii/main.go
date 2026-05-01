@@ -39,10 +39,13 @@ Usage:
   aii index   [--source all|cc|codex|cursor] [--full] [--verbose]
                [--no-redact] [--redact-sources]
   aii search  <query> [--agent cc|codex|cursor] [--workspace DIR]
-                       [--since 7d|2026-01-01] [--limit 20] [--json]
+                       [--since 7d|2026-01-01] [--limit 20]
+                       [--json|--ndjson|--pretty | --format pretty|json|ndjson]
   aii sessions [--agent ..] [--workspace DIR] [--since 7d] [--until ..]
-                [--limit 50] [--offset 0] [--order asc|desc] [--json]
-  aii show    <session-uid> | --last [--format md|plain]
+                [--limit 50] [--offset 0] [--order asc|desc]
+                [--json|--ndjson|--pretty | --format pretty|json|ndjson]
+  aii show    <session-uid> | --last
+                [--format md|plain|ndjson | --ndjson | --pretty]
   aii ask     <question> [--k 6] [--context 2] [--agent ..] [--since ..]
                          [--cmd "claude -p"] [--dry-run] [--show-sources]
   aii related <uid> [--limit 10] [--agent ..]  # find similar sessions
@@ -233,6 +236,7 @@ func cmdSearch(args []string) error {
 	ndjsonOut := fs.Bool("ndjson", false, "emit one JSON line per excerpt (agent-friendly, streamable)")
 	agentFlag := fs.Bool("agent-mode", false, "force agent-oriented output (default when stdout is piped)")
 	pretty := fs.Bool("pretty", false, "force human-readable output even when piped")
+	format := fs.String("format", "", "pretty|json|ndjson — alternative spelling of --pretty/--json/--ndjson")
 	maxBytes := fs.Int("max-bytes", 0, "soft cap on total output bytes (default: unlimited)")
 	fs.Parse(reorderFlags(args))
 	if fs.NArg() == 0 {
@@ -266,7 +270,11 @@ func cmdSearch(args []string) error {
 		return err
 	}
 
-	switch pickSearchFormat(*jsonOut, *ndjsonOut, *pretty, *agentFlag) {
+	mode, err := resolveListFormat(*format, *jsonOut, *ndjsonOut, *pretty, *agentFlag)
+	if err != nil {
+		return err
+	}
+	switch mode {
 	case "json":
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -275,6 +283,26 @@ func cmdSearch(args []string) error {
 		return writeSearchNDJSON(os.Stdout, results, *offset, *maxBytes)
 	default:
 		return writeSearchPretty(os.Stdout, results, *offset, *maxBytes)
+	}
+}
+
+// resolveListFormat folds an explicit --format string and the legacy
+// boolean flags into one of "pretty" | "json" | "ndjson". --format wins
+// if set; otherwise we defer to the booleans + TTY auto-detection. We
+// tolerate the show-side vocabulary (md/plain/human) as aliases for
+// pretty so chained `search --format md` doesn't surprise an agent.
+func resolveListFormat(format string, jsonOut, ndjsonOut, pretty, agentFlag bool) (string, error) {
+	switch strings.TrimSpace(format) {
+	case "":
+		return pickSearchFormat(jsonOut, ndjsonOut, pretty, agentFlag), nil
+	case "pretty", "human", "md", "plain":
+		return "pretty", nil
+	case "json":
+		return "json", nil
+	case "ndjson":
+		return "ndjson", nil
+	default:
+		return "", fmt.Errorf("invalid --format %q (want pretty|json|ndjson)", format)
 	}
 }
 
@@ -480,6 +508,7 @@ func cmdSessions(args []string) error {
 	ndjsonOut := fs.Bool("ndjson", false, "emit one JSON line per session")
 	agentFlag := fs.Bool("agent-mode", false, "force agent-oriented output (default when stdout is piped)")
 	pretty := fs.Bool("pretty", false, "force human-readable output even when piped")
+	format := fs.String("format", "", "pretty|json|ndjson — alternative spelling of --pretty/--json/--ndjson")
 	maxBytes := fs.Int("max-bytes", 0, "soft cap on total output bytes (default: unlimited)")
 	fs.Parse(reorderFlags(args))
 
@@ -514,7 +543,11 @@ func cmdSessions(args []string) error {
 		return err
 	}
 
-	switch pickSearchFormat(*jsonOut, *ndjsonOut, *pretty, *agentFlag) {
+	mode, err := resolveListFormat(*format, *jsonOut, *ndjsonOut, *pretty, *agentFlag)
+	if err != nil {
+		return err
+	}
+	switch mode {
 	case "json":
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -785,7 +818,10 @@ func resolveAskCmd(flag string) string {
 func cmdShow(args []string) error {
 	fs := flag.NewFlagSet("show", flag.ExitOnError)
 	last := fs.Bool("last", false, "show most recent session")
-	format := fs.String("format", "md", "md|plain|ndjson")
+	format := fs.String("format", "", "md|plain|ndjson (default md)")
+	ndjsonOut := fs.Bool("ndjson", false, "alias for --format ndjson — matches the search/sessions flag")
+	jsonOut := fs.Bool("json", false, "alias for --format ndjson (single-session JSON is line-delimited)")
+	prettyOut := fs.Bool("pretty", false, "alias for --format md")
 	around := fs.Int("around", -1, "anchor on this ordinal (pairs with --span)")
 	span := fs.Int("span", 3, "messages of context to show on each side of --around")
 	from := fs.Int("from", -1, "first ordinal to include (inclusive)")
@@ -794,6 +830,11 @@ func cmdShow(args []string) error {
 	maxMsgChars := fs.Int("max-msg-chars", 0, "truncate each message's content to this many chars (0 = no cap)")
 	maxBytes := fs.Int("max-bytes", 0, "soft cap on total output bytes (0 = no cap)")
 	fs.Parse(reorderFlags(args))
+
+	resolvedFormat, err := resolveShowFormat(*format, *ndjsonOut, *jsonOut, *prettyOut)
+	if err != nil {
+		return err
+	}
 
 	warnIfIndexStale()
 
@@ -832,7 +873,35 @@ func cmdShow(args []string) error {
 	}
 	rows = filterRows(rows, normalizeRole(*role), *maxMsgChars)
 
-	return renderSession(os.Stdout, *session, rows, *format, *maxBytes)
+	return renderSession(os.Stdout, *session, rows, resolvedFormat, *maxBytes)
+}
+
+// resolveShowFormat folds --format and the boolean aliases (--ndjson,
+// --json, --pretty) into one of "md" | "plain" | "ndjson". --format
+// wins when set; otherwise the booleans take effect, with the default
+// staying "md". We tolerate the search-side vocabulary
+// (pretty/json/ndjson) in --format so chained `search → show` works
+// regardless of which flag style the agent reaches for.
+func resolveShowFormat(format string, ndjsonOut, jsonOut, prettyOut bool) (string, error) {
+	switch strings.TrimSpace(format) {
+	case "":
+		// fall through to boolean resolution below
+	case "md", "plain", "ndjson":
+		return format, nil
+	case "pretty", "human":
+		return "md", nil
+	case "json":
+		return "ndjson", nil
+	default:
+		return "", fmt.Errorf("invalid --format %q (want md|plain|ndjson)", format)
+	}
+	switch {
+	case ndjsonOut, jsonOut:
+		return "ndjson", nil
+	case prettyOut:
+		return "md", nil
+	}
+	return "md", nil
 }
 
 // fetchSlice returns the subset of a session's messages selected by
@@ -1027,6 +1096,7 @@ func cmdRelated(args []string) error {
 	ndjsonOut := fs.Bool("ndjson", false, "emit one JSON line per excerpt")
 	agentFlag := fs.Bool("agent-mode", false, "force agent-oriented output")
 	pretty := fs.Bool("pretty", false, "force human-readable output")
+	format := fs.String("format", "", "pretty|json|ndjson — alternative spelling of --pretty/--json/--ndjson")
 	maxBytes := fs.Int("max-bytes", 0, "soft cap on output bytes")
 	fs.Parse(reorderFlags(args))
 	if fs.NArg() == 0 {
@@ -1078,7 +1148,11 @@ func cmdRelated(args []string) error {
 		results = results[:*limit]
 	}
 
-	switch pickSearchFormat(*jsonOut, *ndjsonOut, *pretty, *agentFlag) {
+	mode, err := resolveListFormat(*format, *jsonOut, *ndjsonOut, *pretty, *agentFlag)
+	if err != nil {
+		return err
+	}
+	switch mode {
 	case "json":
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -1189,22 +1263,26 @@ func cmdHelpJSON() error {
 				{"--no-redact", "", "disable the default pass that scrubs API keys, tokens, and PEM blocks from indexed content"},
 				{"--redact-sources", "", "also rewrite the original JSONL transcripts in place with redacted content (destructive; JSONL sources only)"},
 			}},
-			{"search", "Hybrid (porter + trigram) full-text search over all transcripts", "aii search <query> [--agent ..] [--workspace ..] [--role ..] [--since ..] [--limit 20] [--offset 0] [--json|--ndjson|--pretty] [--max-bytes N]", []flagInfo{
+			{"search", "Hybrid (porter + trigram) full-text search over all transcripts", "aii search <query> [--agent ..] [--workspace ..] [--role ..] [--since ..] [--limit 20] [--offset 0] [--json|--ndjson|--pretty | --format pretty|json|ndjson] [--max-bytes N]", []flagInfo{
 				{"--role", "", "filter messages by speaker role (user|assistant|tool|thinking)"},
 				{"--offset", "0", "skip N results — use with --limit for pagination"},
 				{"--ndjson", "", "stream one JSON object per excerpt — default when stdout is piped"},
+				{"--format", "", "pretty|json|ndjson — alternative spelling of --pretty/--json/--ndjson"},
 				{"--max-bytes", "0", "stop emitting after this many bytes and add a truncation marker"},
 			}},
-			{"sessions", "Browse sessions by metadata — no full-text query (use --since/--agent to scope a window)", "aii sessions [--agent ..] [--workspace ..] [--since 7d] [--until ..] [--limit 50] [--offset 0] [--order asc|desc] [--ended-mid-task] [--json|--ndjson|--pretty] [--max-bytes N]", []flagInfo{
+			{"sessions", "Browse sessions by metadata — no full-text query (use --since/--agent to scope a window)", "aii sessions [--agent ..] [--workspace ..] [--since 7d] [--until ..] [--limit 50] [--offset 0] [--order asc|desc] [--ended-mid-task] [--json|--ndjson|--pretty | --format pretty|json|ndjson] [--max-bytes N]", []flagInfo{
 				{"--since", "", "lower bound on session time (7d, 24h, 2026-01-01)"},
 				{"--until", "", "upper bound on session time (same formats as --since)"},
 				{"--order", "desc", "asc (oldest first) or desc (newest first)"},
 				{"--ended-mid-task", "", "only sessions whose final message was from user or tool — interrupted / unfinished"},
+				{"--format", "", "pretty|json|ndjson — alternative spelling of --pretty/--json/--ndjson"},
 			}},
-			{"show", "Print a single session — full, sliced, or as ndjson", "aii show <uid>|--last [--around N --span M] [--from N --to M] [--role ..] [--format md|plain|ndjson] [--max-msg-chars N] [--max-bytes N]", []flagInfo{
+			{"show", "Print a single session — full, sliced, or as ndjson", "aii show <uid>|--last [--around N --span M] [--from N --to M] [--role ..] [--format md|plain|ndjson | --ndjson | --pretty] [--max-msg-chars N] [--max-bytes N]", []flagInfo{
 				{"--around", "", "anchor on an ordinal and include ±span around it"},
 				{"--from/--to", "", "inclusive ordinal range"},
 				{"--format", "md", "md for humans, ndjson for agents (one message per line)"},
+				{"--ndjson", "", "alias for --format ndjson — matches the search/sessions flag"},
+				{"--pretty", "", "alias for --format md"},
 			}},
 			{"ask", "Retrieve top-k transcripts and pipe a grounded prompt into an LLM CLI", "aii ask <question> [--k 6] [--context 2] [--cmd \"claude -p\"] [--dry-run] [--show-sources]", nil},
 			{"related", "Find sessions covering similar ground to the given uid", "aii related <uid> [--limit 10] [--agent ..] [--since ..]", nil},
