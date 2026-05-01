@@ -119,6 +119,37 @@ func registerTools(s *server.MCPServer, db *store.DB) {
 	)
 
 	s.AddTool(
+		mcp.NewTool("list_sessions",
+			mcp.WithDescription(
+				"Browse sessions by metadata — no full-text query needed. "+
+					"Use this when the user asks 'what was I working on last "+
+					"week?', 'show me all sessions in this workspace', or any "+
+					"time-window question. Returns sessions ordered by "+
+					"started_at (newest first by default) with title, "+
+					"workspace, and message count. Pair with get_session to "+
+					"open any specific thread."),
+			mcp.WithString("agent",
+				mcp.Description("Filter by agent: cc, codex, or cursor. Empty = all.")),
+			mcp.WithString("workspace",
+				mcp.Description("Exact workspace path to restrict to.")),
+			mcp.WithString("since",
+				mcp.Description("Lower bound on session time. 7d, 24h, 2w, YYYY-MM-DD, or RFC3339.")),
+			mcp.WithString("until",
+				mcp.Description("Upper bound on session time. Same formats as `since`.")),
+			mcp.WithNumber("limit",
+				mcp.DefaultNumber(50),
+				mcp.Description("Max sessions to return (1–500).")),
+			mcp.WithNumber("offset",
+				mcp.DefaultNumber(0),
+				mcp.Description("Skip N sessions before returning — use with limit for pagination.")),
+			mcp.WithString("order",
+				mcp.DefaultString("desc"),
+				mcp.Description("Sort direction by session time: asc (oldest first) or desc (newest first).")),
+		),
+		makeListSessionsHandler(db),
+	)
+
+	s.AddTool(
 		mcp.NewTool("stats",
 			mcp.WithDescription(
 				"Return per-agent row counts and the latest session timestamp. "+
@@ -470,6 +501,95 @@ func relatedSeed(db *store.DB, s *store.Session) (string, error) {
 		return c, nil
 	}
 	return "", nil
+}
+
+// --- list_sessions -----------------------------------------------------
+
+type listSessionsArgs struct {
+	Agent     string  `json:"agent"`
+	Workspace string  `json:"workspace"`
+	Since     string  `json:"since"`
+	Until     string  `json:"until"`
+	Limit     float64 `json:"limit"`
+	Offset    float64 `json:"offset"`
+	Order     string  `json:"order"`
+}
+
+type sessionItem struct {
+	Cite         string `json:"cite"`
+	Agent        string `json:"agent"`
+	UID          string `json:"uid"`
+	Title        string `json:"title,omitempty"`
+	Summary      string `json:"summary,omitempty"`
+	Workspace    string `json:"workspace,omitempty"`
+	StartedAt    int64  `json:"started_at,omitempty"`
+	EndedAt      int64  `json:"ended_at,omitempty"`
+	MessageCount int64  `json:"message_count"`
+}
+
+func makeListSessionsHandler(db *store.DB) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var a listSessionsArgs
+		if err := req.BindArguments(&a); err != nil {
+			return mcp.NewToolResultErrorFromErr("bad arguments", err), nil
+		}
+		since, err := parseSince(a.Since)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("bad since", err), nil
+		}
+		until, err := parseSince(a.Until)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("bad until", err), nil
+		}
+		limit := int(a.Limit)
+		if limit <= 0 {
+			limit = 50
+		}
+		if limit > 500 {
+			limit = 500
+		}
+		items, err := db.ListSessions(store.SessionFilter{
+			Agent:     NormalizeAgent(a.Agent),
+			Workspace: a.Workspace,
+			SinceUnix: since,
+			UntilUnix: until,
+			Limit:     limit,
+			Offset:    int(a.Offset),
+			Order:     a.Order,
+		})
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("list_sessions failed", err), nil
+		}
+		out := make([]sessionItem, 0, len(items))
+		for _, s := range items {
+			out = append(out, sessionItem{
+				Cite:         fmt.Sprintf("%s/%s", ShortAgent(s.Agent), ShortUID(s.UID)),
+				Agent:        s.Agent,
+				UID:          s.UID,
+				Title:        s.Title,
+				Summary:      s.Summary,
+				Workspace:    s.Workspace,
+				StartedAt:    s.StartedAt,
+				EndedAt:      s.EndedAt,
+				MessageCount: s.MessageCount,
+			})
+		}
+		payload := map[string]any{
+			"count":    len(out),
+			"sessions": out,
+		}
+		var fb strings.Builder
+		fmt.Fprintf(&fb, "%d sessions\n", len(out))
+		for _, s := range out {
+			title := s.Title
+			if title == "" {
+				title = s.UID
+			}
+			fmt.Fprintf(&fb, "- %s  %s  (%d msg)  %s\n",
+				s.Cite, store.FormatTime(s.StartedAt), s.MessageCount, oneLine(title))
+		}
+		return mcp.NewToolResultStructured(payload, fb.String()), nil
+	}
 }
 
 // --- stats -------------------------------------------------------------

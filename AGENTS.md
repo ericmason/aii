@@ -23,12 +23,13 @@ messages seen, implementations discussed.
 If the user's client speaks MCP (Claude Code, Cursor, modern Codex),
 `aii` runs as a registered MCP server and exposes these tools:
 
-| Tool          | When to call                                                 |
-|---------------|--------------------------------------------------------------|
-| `search`      | Any "what did we...", "have I...", "how did I fix..." question |
-| `get_session` | After a search, to read exact surrounding messages            |
-| `related`     | "Find more threads on this topic" after locating one         |
-| `stats`       | Sanity check; only if you suspect the index is empty         |
+| Tool             | When to call                                                 |
+|------------------|--------------------------------------------------------------|
+| `search`         | Any "what did we...", "have I...", "how did I fix..." question |
+| `list_sessions`  | "What was I working on last week?", time-window or workspace browse — no query needed |
+| `get_session`    | After a search/list, to read exact surrounding messages       |
+| `related`        | "Find more threads on this topic" after locating one         |
+| `stats`          | Sanity check; only if you suspect the index is empty         |
 
 **The chain pattern** — this is the #1 thing to learn:
 
@@ -51,6 +52,7 @@ flag.
 
 ```sh
 aii search 'webhook retry' --limit 5
+aii sessions --since 7d --agent cc --ndjson    # browse a time window
 aii show cc/32e869ac:319 --span 3 --max-msg-chars 2000 --format ndjson
 aii related 32e869ac --limit 5
 aii help --json                      # schema of commands + flags

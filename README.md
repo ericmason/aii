@@ -46,6 +46,7 @@ That's it. The database lives at `$AII_DB` or
 ```sh
 aii index                      # scan every source, incrementally
 aii search "webhook retry"     # find conversations that touched it
+aii sessions --since 7d        # browse everything from the last week
 aii show <session-uid>         # print the whole session
 aii ask  "how did I fix the webhook retries?"  # RAG over your chats
 ```
@@ -98,6 +99,27 @@ Output mode resolution:
 - `--json`, `--ndjson`, `--pretty` win explicitly, in that order.
 - If none: **pretty** on a TTY, **ndjson** when piped.
 - `--agent-mode` or `AII_AGENT=1` force ndjson regardless.
+
+### `aii sessions` — browse sessions by time / agent / workspace
+
+```
+aii sessions [--agent cc|codex|cursor] [--workspace DIR]
+             [--since 7d|2026-01-01] [--until 1d|2026-01-15]
+             [--limit 50] [--offset 0] [--order asc|desc]
+             [--pretty|--ndjson|--json] [--max-bytes N]
+```
+
+The "what was I working on last week?" entry point. No full-text
+query — just a metadata listing of sessions ordered by time, with
+title, workspace, and message count per session. Pair with
+`aii show <uid>` to open any thread, or pipe to your shell:
+
+```sh
+aii sessions --since 7d                           # last week
+aii sessions --since 30d --until 7d --agent cc    # 3-week window, Claude Code only
+aii sessions --workspace "$HOME/code/myproject"   # everything in one repo
+aii sessions --since 1d --ndjson | jq .uid        # pipe-friendly
+```
 
 ### `aii show` — print a session (full or sliced)
 
@@ -262,11 +284,14 @@ claude mcp add aii aii mcp
 #   "mcpServers": { "aii": { "command": "aii", "args": ["mcp"] } }
 ```
 
-Four tools. Full grammar is embedded in their descriptions — an agent
+Five tools. Full grammar is embedded in their descriptions — an agent
 can discover the cite-token convention just by listing tools.
 
 - `search(query, agent?, workspace?, role?, since?, limit?, offset?)`
   → hits with cite tokens.
+- `list_sessions(agent?, workspace?, since?, until?, limit?, offset?, order?)`
+  — browse sessions in a time window without a full-text query. Use
+  for "what was I working on last week?" questions.
 - `get_session(session, around?, span?, from?, to?, role?, max_msg_chars?)`
   — accepts full uid, short uid, or a full cite token. If the cite
   carries an ordinal and you don't pass `around`/`from`/`to`, the

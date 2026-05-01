@@ -128,14 +128,75 @@ function renderResults(hits) {
   }
 }
 
+function renderSessions(items, total) {
+  emptyEl.hidden = true;
+  if (!items || !items.length) {
+    resultsEl.innerHTML = `<p class="empty">no sessions in this window</p>`;
+    $("#browse-hint").hidden = true;
+    return;
+  }
+  const showing = items.length === total ? `${items.length} sessions` : `${items.length} of ${total.toLocaleString()} sessions`;
+  const hint = $("#browse-hint");
+  hint.textContent = "browsing — type above to search";
+  hint.hidden = false;
+  const countLabel = `<p class="result-count">${showing} · newest first</p>`;
+  resultsEl.innerHTML = countLabel + items.map((s) => {
+    const summary = s.summary ? `<div class="r-summary">${esc(s.summary)}</div>` : "";
+    const workspace = s.workspace ? `<div class="r-workspace">${esc(s.workspace)}</div>` : "";
+    const title = esc(s.title || s.uid);
+    const uid = esc((s.uid || "").slice(0, 8));
+    const msgs = `<span class="more">${s.message_count} msg${s.message_count === 1 ? "" : "s"}</span>`;
+    return `
+      <article class="result session-row" data-uid="${esc(s.uid)}">
+        <div class="rank">·</div>
+        <div>
+          <header class="r-head">
+            <span class="agent ${esc(s.agent)}">${esc(agentLabel(s.agent))}</span>
+            <span title="${fmtDateAbs(s.started_at)}">${fmtDate(s.started_at)}</span>
+            <span class="sep">·</span>
+            <span class="uid">${uid}</span>
+            ${msgs}
+          </header>
+          <h2 class="r-title">${title}</h2>
+          ${workspace}
+          ${summary}
+        </div>
+      </article>`;
+  }).join("");
+  for (const el of resultsEl.querySelectorAll(".result")) {
+    el.addEventListener("click", () => openSession(el.dataset.uid, 0));
+  }
+}
+
+async function runBrowse() {
+  if (ctl) ctl.abort();
+  ctl = new AbortController();
+  const params = new URLSearchParams({
+    agent: $("#agent").value,
+    since: $("#since").value,
+    limit: "100",
+  });
+  showBusy(true);
+  try {
+    const r = await fetch("/api/sessions?" + params, { signal: ctl.signal });
+    const data = await r.json();
+    renderSessions(data.items || [], data.total || 0);
+    showBusy(false);
+  } catch (e) {
+    if (e.name !== "AbortError") {
+      console.error(e);
+      showBusy(false);
+    }
+  }
+}
+
 async function runSearch() {
   const q = $("#q").value.trim();
   if (!q) {
-    resultsEl.innerHTML = "";
-    emptyEl.hidden = false;
-    showBusy(false);
-    return;
+    // Empty query → browse mode (recent sessions filtered by since/agent).
+    return runBrowse();
   }
+  $("#browse-hint").hidden = true;
   if (ctl) ctl.abort();
   ctl = new AbortController();
   const params = new URLSearchParams({
@@ -170,9 +231,16 @@ $("#q").addEventListener("input", () => {
 });
 $("#agent").addEventListener("change", runSearch);
 $("#since").addEventListener("change", runSearch);
-$("#q").addEventListener("keydown", (e) => { if (e.key === "Escape") $("#q").value = ""; });
+$("#q").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    $("#q").value = "";
+    runBrowse();
+  }
+});
 
-emptyEl.hidden = false;
+// Default landing view = browse, not "start typing".
+emptyEl.hidden = true;
+runBrowse();
 
 // --- session preview --------------------------------------------------
 

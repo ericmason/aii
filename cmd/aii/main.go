@@ -39,6 +39,8 @@ Usage:
                [--no-redact] [--redact-sources]
   aii search  <query> [--agent cc|codex|cursor] [--workspace DIR]
                        [--since 7d|2026-01-01] [--limit 20] [--json]
+  aii sessions [--agent ..] [--workspace DIR] [--since 7d] [--until ..]
+                [--limit 50] [--offset 0] [--order asc|desc] [--json]
   aii show    <session-uid> | --last [--format md|plain]
   aii ask     <question> [--k 6] [--context 2] [--agent ..] [--since ..]
                          [--cmd "claude -p"] [--dry-run] [--show-sources]
@@ -70,6 +72,8 @@ func main() {
 		err = cmdIndex(ctx, args)
 	case "search":
 		err = cmdSearch(args)
+	case "sessions", "list":
+		err = cmdSessions(args)
 	case "ask":
 		err = cmdAsk(ctx, args)
 	case "show":
@@ -445,6 +449,155 @@ func pluralS(n int) string {
 		return ""
 	}
 	return "s"
+}
+
+// --- sessions ----------------------------------------------------------
+
+// cmdSessions lists sessions by metadata — no full-text query. This is
+// the "what was I working on last week?" entry point. Output mirrors
+// search: pretty on a TTY, ndjson when piped, with the same flags.
+func cmdSessions(args []string) error {
+	fs := flag.NewFlagSet("sessions", flag.ExitOnError)
+	agent := fs.String("agent", "", "cc|codex|cursor")
+	workspace := fs.String("workspace", "", "exact workspace path")
+	since := fs.String("since", "", "7d | 2026-01-01")
+	until := fs.String("until", "", "7d | 2026-01-01 — upper bound on session time")
+	limit := fs.Int("limit", 50, "max sessions to return")
+	offset := fs.Int("offset", 0, "skip this many sessions before returning (pagination)")
+	order := fs.String("order", "desc", "asc|desc — by session time")
+	jsonOut := fs.Bool("json", false, "emit a single JSON array (all results)")
+	ndjsonOut := fs.Bool("ndjson", false, "emit one JSON line per session")
+	agentFlag := fs.Bool("agent-mode", false, "force agent-oriented output (default when stdout is piped)")
+	pretty := fs.Bool("pretty", false, "force human-readable output even when piped")
+	maxBytes := fs.Int("max-bytes", 0, "soft cap on total output bytes (default: unlimited)")
+	fs.Parse(reorderFlags(args))
+
+	warnIfIndexStale()
+
+	sinceUnix, err := parseSince(*since)
+	if err != nil {
+		return err
+	}
+	untilUnix, err := parseSince(*until)
+	if err != nil {
+		return fmt.Errorf("--until: %w", err)
+	}
+
+	db, err := store.Open(store.DefaultPath())
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	items, err := db.ListSessions(store.SessionFilter{
+		Agent:     normalizeAgent(*agent),
+		Workspace: *workspace,
+		SinceUnix: sinceUnix,
+		UntilUnix: untilUnix,
+		Limit:     *limit,
+		Offset:    *offset,
+		Order:     *order,
+	})
+	if err != nil {
+		return err
+	}
+
+	switch pickSearchFormat(*jsonOut, *ndjsonOut, *pretty, *agentFlag) {
+	case "json":
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(items)
+	case "ndjson":
+		return writeSessionsNDJSON(os.Stdout, items, *offset, *maxBytes)
+	default:
+		return writeSessionsPretty(os.Stdout, items, *offset, *maxBytes)
+	}
+}
+
+func writeSessionsPretty(w *os.File, items []store.SessionListItem, offset, maxBytes int) error {
+	if len(items) == 0 {
+		fmt.Fprintln(w, cMuted("no sessions match"))
+		return nil
+	}
+	var b strings.Builder
+	fmt.Fprintln(&b, cMuted(fmt.Sprintf("— %d session%s, newest first —", len(items), pluralS(len(items)))))
+	b.WriteString("\n")
+	for i, s := range items {
+		date := store.FormatTime(s.StartedAt)
+		if date == "" {
+			date = "—"
+		}
+		ws := s.Workspace
+		if ws == "" {
+			ws = "—"
+		}
+		title := s.Title
+		if title == "" {
+			title = s.UID
+		}
+		rank := cMuted(fmt.Sprintf("%2d.", i+1+offset))
+		badge := cAgent(s.Agent)
+		cite := cMuted(fmt.Sprintf("%s/%s", shortAgent(s.Agent), shortUID(s.UID)))
+		dateCol := cMuted(date)
+		msgs := cMuted(fmt.Sprintf("· %d msg%s", s.MessageCount, pluralS(int(s.MessageCount))))
+		fmt.Fprintf(&b, "%s %s  %s  %s  %s %s %s\n",
+			rank, badge, dateCol, cite, cMuted("·"), cHead(truncate(title, 80)), msgs)
+		fmt.Fprintf(&b, "     %s %s\n", cMuted("↳"), cAccent(truncate(ws, 100)))
+		if sm := strings.TrimSpace(s.Summary); sm != "" {
+			fmt.Fprintf(&b, "     %s %s\n", cMuted("▌"), cDim(truncate(sm, 180)))
+		}
+		b.WriteString("\n")
+	}
+	return writeCapped(w, b.String(), maxBytes)
+}
+
+type ndjsonSession struct {
+	Cite         string `json:"cite"`
+	Agent        string `json:"agent"`
+	UID          string `json:"uid"`
+	Title        string `json:"title,omitempty"`
+	Summary      string `json:"summary,omitempty"`
+	Workspace    string `json:"workspace,omitempty"`
+	StartedAt    int64  `json:"started_at,omitempty"`
+	EndedAt      int64  `json:"ended_at,omitempty"`
+	MessageCount int64  `json:"message_count"`
+	Rank         int    `json:"rank"`
+}
+
+func writeSessionsNDJSON(w *os.File, items []store.SessionListItem, offset, maxBytes int) error {
+	bytesWritten := 0
+	skipped := 0
+	for i, s := range items {
+		row := ndjsonSession{
+			Cite:         fmt.Sprintf("%s/%s", shortAgent(s.Agent), shortUID(s.UID)),
+			Agent:        s.Agent,
+			UID:          s.UID,
+			Title:        s.Title,
+			Summary:      s.Summary,
+			Workspace:    s.Workspace,
+			StartedAt:    s.StartedAt,
+			EndedAt:      s.EndedAt,
+			MessageCount: s.MessageCount,
+			Rank:         i + 1 + offset,
+		}
+		buf, err := json.Marshal(row)
+		if err != nil {
+			return err
+		}
+		line := append(buf, '\n')
+		if maxBytes > 0 && bytesWritten+len(line) > maxBytes {
+			skipped++
+			continue
+		}
+		if _, err := w.Write(line); err != nil {
+			return err
+		}
+		bytesWritten += len(line)
+	}
+	if skipped > 0 {
+		fmt.Fprintf(w, "{\"truncated\":true,\"skipped_rows\":%d}\n", skipped)
+	}
+	return nil
 }
 
 // --- ask ---------------------------------------------------------------
@@ -1021,6 +1174,11 @@ func cmdHelpJSON() error {
 				{"--offset", "0", "skip N results — use with --limit for pagination"},
 				{"--ndjson", "", "stream one JSON object per excerpt — default when stdout is piped"},
 				{"--max-bytes", "0", "stop emitting after this many bytes and add a truncation marker"},
+			}},
+			{"sessions", "Browse sessions by metadata — no full-text query (use --since/--agent to scope a window)", "aii sessions [--agent ..] [--workspace ..] [--since 7d] [--until ..] [--limit 50] [--offset 0] [--order asc|desc] [--json|--ndjson|--pretty] [--max-bytes N]", []flagInfo{
+				{"--since", "", "lower bound on session time (7d, 24h, 2026-01-01)"},
+				{"--until", "", "upper bound on session time (same formats as --since)"},
+				{"--order", "desc", "asc (oldest first) or desc (newest first)"},
 			}},
 			{"show", "Print a single session — full, sliced, or as ndjson", "aii show <uid>|--last [--around N --span M] [--from N --to M] [--role ..] [--format md|plain|ndjson] [--max-msg-chars N] [--max-bytes N]", []flagInfo{
 				{"--around", "", "anchor on an ordinal and include ±span around it"},

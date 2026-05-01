@@ -38,6 +38,9 @@ func Serve(ctx context.Context, db *store.DB, addr string) error {
 	mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
 		apiStats(db, w, r)
 	})
+	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
+		apiSessions(db, w, r)
+	})
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -151,6 +154,83 @@ func apiSession(db *store.DB, w http.ResponseWriter, r *http.Request) {
 		StartedAt: s.StartedAt, EndedAt: s.EndedAt}
 	for _, r := range rows {
 		out.Messages = append(out.Messages, msg{Ordinal: r.Ordinal, Role: r.Role, TS: r.TS, Content: r.Content})
+	}
+	writeJSON(w, out)
+}
+
+// apiSessions powers the browse view: a metadata-only listing of
+// sessions filtered by agent + time window. No FTS query, so an empty
+// `q` in the UI can land here and show "what's recent" immediately.
+func apiSessions(db *store.DB, w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	agent := normalizeAgent(q.Get("agent"))
+	workspace := q.Get("workspace")
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	order := q.Get("order")
+
+	var since, until int64
+	if s := q.Get("since"); s != "" {
+		t, err := parseSince(s)
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		since = t
+	}
+	if s := q.Get("until"); s != "" {
+		t, err := parseSince(s)
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		until = t
+	}
+
+	items, err := db.ListSessions(store.SessionFilter{
+		Agent:     agent,
+		Workspace: workspace,
+		SinceUnix: since,
+		UntilUnix: until,
+		Limit:     limit,
+		Offset:    offset,
+		Order:     order,
+	})
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	total, err := db.CountSessions(store.SessionFilter{
+		Agent: agent, Workspace: workspace, SinceUnix: since, UntilUnix: until,
+	})
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	type item struct {
+		UID          string `json:"uid"`
+		Agent        string `json:"agent"`
+		Title        string `json:"title"`
+		Summary      string `json:"summary,omitempty"`
+		Workspace    string `json:"workspace"`
+		StartedAt    int64  `json:"started_at"`
+		EndedAt      int64  `json:"ended_at"`
+		MessageCount int64  `json:"message_count"`
+	}
+	out := struct {
+		Total int64  `json:"total"`
+		Items []item `json:"items"`
+	}{Total: total, Items: make([]item, 0, len(items))}
+	for _, s := range items {
+		out.Items = append(out.Items, item{
+			UID: s.UID, Agent: s.Agent, Title: s.Title, Summary: s.Summary,
+			Workspace: s.Workspace, StartedAt: s.StartedAt, EndedAt: s.EndedAt,
+			MessageCount: s.MessageCount,
+		})
 	}
 	writeJSON(w, out)
 }

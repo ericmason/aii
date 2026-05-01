@@ -10,9 +10,9 @@ Cursor transcripts. Query it to recover context the user expects you to
 "remember" — prior decisions, commands run, error messages seen,
 implementations discussed.
 
-Prefer the MCP tools (`search`, `get_session`, `related`, `stats`) if
-they're registered. Otherwise shell out to the `aii` CLI — when stdout
-is piped, `aii` emits ndjson automatically.
+Prefer the MCP tools (`search`, `list_sessions`, `get_session`,
+`related`, `stats`) if they're registered. Otherwise shell out to the
+`aii` CLI — when stdout is piped, `aii` emits ndjson automatically.
 
 ## When to search
 
@@ -56,14 +56,16 @@ copy-pasteable and round-trips to `get_session` / `aii show`.
 
 ## MCP tools (preferred)
 
-| Tool          | When to call                                                    |
-|---------------|-----------------------------------------------------------------|
-| `search`      | Any "what did we…", "have I…", "how did I fix…" question        |
-| `get_session` | After a search, to read exact surrounding messages              |
-| `related`     | "Find more threads on this topic" after locating one            |
-| `stats`       | Sanity check; only if you suspect the index is empty            |
+| Tool             | When to call                                                    |
+|------------------|-----------------------------------------------------------------|
+| `search`         | Any "what did we…", "have I…", "how did I fix…" question        |
+| `list_sessions`  | "What was I working on last week?" — browse a time window with no full-text query |
+| `get_session`    | After a search/list, to read exact surrounding messages         |
+| `related`        | "Find more threads on this topic" after locating one            |
+| `stats`          | Sanity check; only if you suspect the index is empty            |
 
 `search(query, agent?, workspace?, role?, since?, limit?, offset?)`
+`list_sessions(agent?, workspace?, since?, until?, limit?, offset?, order?)`
 `get_session(session, around?, span?, from?, to?, role?, max_msg_chars?)`
 `related(session, limit?, agent?, since?)`
 
@@ -71,6 +73,7 @@ copy-pasteable and round-trips to `get_session` / `aii show`.
 
 ```sh
 aii search 'webhook retry' --limit 5 --max-bytes 8000
+aii sessions --since 7d --agent cc           # browse a time window
 aii show cc/32e869ac:319 --span 3 --max-msg-chars 2000 --format ndjson
 aii related 32e869ac --limit 5
 aii help --json                      # schema of commands + flags

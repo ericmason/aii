@@ -335,6 +335,134 @@ type Row struct {
 	Content string
 }
 
+// SessionFilter selects sessions by metadata; no full-text query.
+// Empty fields are ignored. Order is "desc" (newest first) by default.
+type SessionFilter struct {
+	Agent     string
+	Workspace string
+	SinceUnix int64
+	UntilUnix int64
+	Limit     int
+	Offset    int
+	Order     string // "asc" | "desc" — by started_at (defaults desc)
+}
+
+// SessionListItem is a Session augmented with its message count, used by
+// list/browse views where we want the size of each thread without
+// pulling its messages.
+type SessionListItem struct {
+	Session
+	MessageCount int64
+}
+
+// ListSessions returns sessions matching the filter, ordered by
+// started_at and paginated. Unlike Search this never touches FTS — it's
+// the "show me everything from last week" entry point.
+func (d *DB) ListSessions(f SessionFilter) ([]SessionListItem, error) {
+	if f.Limit <= 0 {
+		f.Limit = 50
+	}
+	if f.Offset < 0 {
+		f.Offset = 0
+	}
+	order := "DESC"
+	if strings.EqualFold(f.Order, "asc") {
+		order = "ASC"
+	}
+
+	var (
+		clauses []string
+		args    []any
+	)
+	if f.Agent != "" {
+		clauses = append(clauses, "s.agent = ?")
+		args = append(args, f.Agent)
+	}
+	if f.Workspace != "" {
+		clauses = append(clauses, "s.workspace = ?")
+		args = append(args, f.Workspace)
+	}
+	// Filter on the session's effective timestamp (ended_at if present,
+	// else started_at). Sessions without timestamps (legacy rows) are
+	// dropped from time-filtered queries — they'd sort to the top
+	// otherwise and confuse the "last 7 days" view.
+	if f.SinceUnix > 0 {
+		clauses = append(clauses, "COALESCE(s.ended_at, s.started_at, 0) >= ?")
+		args = append(args, f.SinceUnix)
+	}
+	if f.UntilUnix > 0 {
+		clauses = append(clauses, "COALESCE(s.ended_at, s.started_at, 0) <= ?")
+		args = append(args, f.UntilUnix)
+	}
+	where := ""
+	if len(clauses) > 0 {
+		where = "WHERE " + strings.Join(clauses, " AND ")
+	}
+
+	q := fmt.Sprintf(`
+        SELECT s.id, s.agent, s.session_uid,
+               COALESCE(s.workspace, ''), COALESCE(s.title, ''), COALESCE(s.summary, ''),
+               COALESCE(s.started_at, 0), COALESCE(s.ended_at, 0),
+               s.source_path, s.source_mtime_ns, s.source_size,
+               (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS msg_count
+        FROM sessions s
+        %s
+        ORDER BY COALESCE(s.ended_at, s.started_at, 0) %s, s.id %s
+        LIMIT ? OFFSET ?`, where, order, order)
+	args = append(args, f.Limit, f.Offset)
+
+	rows, err := d.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []SessionListItem
+	for rows.Next() {
+		var it SessionListItem
+		if err := rows.Scan(&it.ID, &it.Agent, &it.UID, &it.Workspace, &it.Title, &it.Summary,
+			&it.StartedAt, &it.EndedAt,
+			&it.SourcePath, &it.SourceMtimeNs, &it.SourceSize,
+			&it.MessageCount); err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+// CountSessions returns the total session count for a filter — useful
+// for paginated views that want to show "showing N of M".
+func (d *DB) CountSessions(f SessionFilter) (int64, error) {
+	var (
+		clauses []string
+		args    []any
+	)
+	if f.Agent != "" {
+		clauses = append(clauses, "agent = ?")
+		args = append(args, f.Agent)
+	}
+	if f.Workspace != "" {
+		clauses = append(clauses, "workspace = ?")
+		args = append(args, f.Workspace)
+	}
+	if f.SinceUnix > 0 {
+		clauses = append(clauses, "COALESCE(ended_at, started_at, 0) >= ?")
+		args = append(args, f.SinceUnix)
+	}
+	if f.UntilUnix > 0 {
+		clauses = append(clauses, "COALESCE(ended_at, started_at, 0) <= ?")
+		args = append(args, f.UntilUnix)
+	}
+	where := ""
+	if len(clauses) > 0 {
+		where = "WHERE " + strings.Join(clauses, " AND ")
+	}
+	var n int64
+	err := d.QueryRow("SELECT COUNT(*) FROM sessions "+where, args...).Scan(&n)
+	return n, err
+}
+
 func (d *DB) SessionMessages(sessionID int64) ([]Row, error) {
 	rows, err := d.Query(`SELECT ordinal, role, COALESCE(ts,0), content
                           FROM messages WHERE session_id = ? ORDER BY ordinal`, sessionID)

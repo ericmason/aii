@@ -240,6 +240,17 @@ main {
   align-items: center;
   gap: 8px;
 }
+.browse-hint {
+  max-width: 1180px;
+  margin: 4px auto 0;
+  padding: 0 28px;
+  color: var(--dim);
+  font-size: 11.5px;
+  letter-spacing: .4px;
+  text-transform: uppercase;
+  font-family: var(--mono);
+}
+.session-row .rank { color: var(--dim); }
 .result-count::before {
   content: "";
   flex: 1;
