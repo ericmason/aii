@@ -465,6 +465,7 @@ func cmdSessions(args []string) error {
 	limit := fs.Int("limit", 50, "max sessions to return")
 	offset := fs.Int("offset", 0, "skip this many sessions before returning (pagination)")
 	order := fs.String("order", "desc", "asc|desc — by session time")
+	endedMidTask := fs.Bool("ended-mid-task", false, "only show sessions whose final message was from user or tool (interrupted / unfinished)")
 	jsonOut := fs.Bool("json", false, "emit a single JSON array (all results)")
 	ndjsonOut := fs.Bool("ndjson", false, "emit one JSON line per session")
 	agentFlag := fs.Bool("agent-mode", false, "force agent-oriented output (default when stdout is piped)")
@@ -490,13 +491,14 @@ func cmdSessions(args []string) error {
 	defer db.Close()
 
 	items, err := db.ListSessions(store.SessionFilter{
-		Agent:     normalizeAgent(*agent),
-		Workspace: *workspace,
-		SinceUnix: sinceUnix,
-		UntilUnix: untilUnix,
-		Limit:     *limit,
-		Offset:    *offset,
-		Order:     *order,
+		Agent:        normalizeAgent(*agent),
+		Workspace:    *workspace,
+		SinceUnix:    sinceUnix,
+		UntilUnix:    untilUnix,
+		Limit:        *limit,
+		Offset:       *offset,
+		Order:        *order,
+		EndedMidTask: *endedMidTask,
 	})
 	if err != nil {
 		return err
@@ -1175,10 +1177,11 @@ func cmdHelpJSON() error {
 				{"--ndjson", "", "stream one JSON object per excerpt — default when stdout is piped"},
 				{"--max-bytes", "0", "stop emitting after this many bytes and add a truncation marker"},
 			}},
-			{"sessions", "Browse sessions by metadata — no full-text query (use --since/--agent to scope a window)", "aii sessions [--agent ..] [--workspace ..] [--since 7d] [--until ..] [--limit 50] [--offset 0] [--order asc|desc] [--json|--ndjson|--pretty] [--max-bytes N]", []flagInfo{
+			{"sessions", "Browse sessions by metadata — no full-text query (use --since/--agent to scope a window)", "aii sessions [--agent ..] [--workspace ..] [--since 7d] [--until ..] [--limit 50] [--offset 0] [--order asc|desc] [--ended-mid-task] [--json|--ndjson|--pretty] [--max-bytes N]", []flagInfo{
 				{"--since", "", "lower bound on session time (7d, 24h, 2026-01-01)"},
 				{"--until", "", "upper bound on session time (same formats as --since)"},
 				{"--order", "desc", "asc (oldest first) or desc (newest first)"},
+				{"--ended-mid-task", "", "only sessions whose final message was from user or tool — interrupted / unfinished"},
 			}},
 			{"show", "Print a single session — full, sliced, or as ndjson", "aii show <uid>|--last [--around N --span M] [--from N --to M] [--role ..] [--format md|plain|ndjson] [--max-msg-chars N] [--max-bytes N]", []flagInfo{
 				{"--around", "", "anchor on an ordinal and include ±span around it"},
@@ -1403,7 +1406,8 @@ func reorderFlags(in []string) []string {
 		"--verbose": true, "-verbose": true, "--last": true, "-last": true,
 		"--dry-run": true, "-dry-run": true, "--show-sources": true, "-show-sources": true,
 		"--no-redact": true, "-no-redact": true, "--redact-sources": true, "-redact-sources": true,
-		"--quiet": true, "-quiet": true}
+		"--quiet": true, "-quiet": true,
+		"--ended-mid-task": true, "-ended-mid-task": true}
 	var flags, rest []string
 	for i := 0; i < len(in); i++ {
 		a := in[i]

@@ -119,7 +119,13 @@ aii sessions --since 7d                           # last week
 aii sessions --since 30d --until 7d --agent cc    # 3-week window, Claude Code only
 aii sessions --workspace "$HOME/code/myproject"   # everything in one repo
 aii sessions --since 1d --ndjson | jq .uid        # pipe-friendly
+aii sessions --since 7d --ended-mid-task          # interrupted threads only
 ```
+
+`--ended-mid-task` filters to sessions whose final message was from
+the user or a tool — meaning the assistant never got the last word.
+Useful for finding threads where you closed the terminal mid-task or
+the agent crashed before responding.
 
 ### `aii show` — print a session (full or sliced)
 

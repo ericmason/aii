@@ -345,6 +345,10 @@ type SessionFilter struct {
 	Limit     int
 	Offset    int
 	Order     string // "asc" | "desc" — by started_at (defaults desc)
+	// EndedMidTask filters to sessions whose final message is a user or
+	// tool message — i.e. the assistant never got a chance to respond,
+	// suggesting the session was interrupted or crashed.
+	EndedMidTask bool
 }
 
 // SessionListItem is a Session augmented with its message count, used by
@@ -393,6 +397,9 @@ func (d *DB) ListSessions(f SessionFilter) ([]SessionListItem, error) {
 	if f.UntilUnix > 0 {
 		clauses = append(clauses, "COALESCE(s.ended_at, s.started_at, 0) <= ?")
 		args = append(args, f.UntilUnix)
+	}
+	if f.EndedMidTask {
+		clauses = append(clauses, endedMidTaskSQL)
 	}
 	where := ""
 	if len(clauses) > 0 {
@@ -454,6 +461,11 @@ func (d *DB) CountSessions(f SessionFilter) (int64, error) {
 		clauses = append(clauses, "COALESCE(ended_at, started_at, 0) <= ?")
 		args = append(args, f.UntilUnix)
 	}
+	// CountSessions's table alias is `sessions` (no `s.`), so swap the
+	// EXISTS subquery to reference the bare table.
+	if f.EndedMidTask {
+		clauses = append(clauses, strings.ReplaceAll(endedMidTaskSQL, "s.id", "sessions.id"))
+	}
 	where := ""
 	if len(clauses) > 0 {
 		where = "WHERE " + strings.Join(clauses, " AND ")
@@ -462,6 +474,17 @@ func (d *DB) CountSessions(f SessionFilter) (int64, error) {
 	err := d.QueryRow("SELECT COUNT(*) FROM sessions "+where, args...).Scan(&n)
 	return n, err
 }
+
+// endedMidTaskSQL flags sessions whose final message was authored by
+// the user or a tool — meaning the assistant never got the last word.
+// Implies the session was interrupted (user quit), the agent crashed
+// mid-response, or a tool result is sitting unprocessed.
+const endedMidTaskSQL = `EXISTS (
+    SELECT 1 FROM messages m
+    WHERE m.session_id = s.id
+      AND m.role IN ('user','tool')
+      AND m.ordinal = (SELECT MAX(ordinal) FROM messages WHERE session_id = s.id)
+)`
 
 func (d *DB) SessionMessages(sessionID int64) ([]Row, error) {
 	rows, err := d.Query(`SELECT ordinal, role, COALESCE(ts,0), content

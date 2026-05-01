@@ -145,6 +145,8 @@ func registerTools(s *server.MCPServer, db *store.DB) {
 			mcp.WithString("order",
 				mcp.DefaultString("desc"),
 				mcp.Description("Sort direction by session time: asc (oldest first) or desc (newest first).")),
+			mcp.WithBoolean("ended_mid_task",
+				mcp.Description("Only return sessions whose final message was from user or tool — i.e. the assistant never responded. Use to recover interrupted threads.")),
 		),
 		makeListSessionsHandler(db),
 	)
@@ -506,13 +508,14 @@ func relatedSeed(db *store.DB, s *store.Session) (string, error) {
 // --- list_sessions -----------------------------------------------------
 
 type listSessionsArgs struct {
-	Agent     string  `json:"agent"`
-	Workspace string  `json:"workspace"`
-	Since     string  `json:"since"`
-	Until     string  `json:"until"`
-	Limit     float64 `json:"limit"`
-	Offset    float64 `json:"offset"`
-	Order     string  `json:"order"`
+	Agent        string  `json:"agent"`
+	Workspace    string  `json:"workspace"`
+	Since        string  `json:"since"`
+	Until        string  `json:"until"`
+	Limit        float64 `json:"limit"`
+	Offset       float64 `json:"offset"`
+	Order        string  `json:"order"`
+	EndedMidTask bool    `json:"ended_mid_task"`
 }
 
 type sessionItem struct {
@@ -549,13 +552,14 @@ func makeListSessionsHandler(db *store.DB) server.ToolHandlerFunc {
 			limit = 500
 		}
 		items, err := db.ListSessions(store.SessionFilter{
-			Agent:     NormalizeAgent(a.Agent),
-			Workspace: a.Workspace,
-			SinceUnix: since,
-			UntilUnix: until,
-			Limit:     limit,
-			Offset:    int(a.Offset),
-			Order:     a.Order,
+			Agent:        NormalizeAgent(a.Agent),
+			Workspace:    a.Workspace,
+			SinceUnix:    since,
+			UntilUnix:    until,
+			Limit:        limit,
+			Offset:       int(a.Offset),
+			Order:        a.Order,
+			EndedMidTask: a.EndedMidTask,
 		})
 		if err != nil {
 			return mcp.NewToolResultErrorFromErr("list_sessions failed", err), nil

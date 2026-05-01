@@ -190,14 +190,16 @@ func apiSessions(db *store.DB, w http.ResponseWriter, r *http.Request) {
 		until = t
 	}
 
+	endedMidTask := q.Get("ended_mid_task") == "1" || q.Get("ended_mid_task") == "true"
 	items, err := db.ListSessions(store.SessionFilter{
-		Agent:     agent,
-		Workspace: workspace,
-		SinceUnix: since,
-		UntilUnix: until,
-		Limit:     limit,
-		Offset:    offset,
-		Order:     order,
+		Agent:        agent,
+		Workspace:    workspace,
+		SinceUnix:    since,
+		UntilUnix:    until,
+		Limit:        limit,
+		Offset:       offset,
+		Order:        order,
+		EndedMidTask: endedMidTask,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), 500)
@@ -205,6 +207,7 @@ func apiSessions(db *store.DB, w http.ResponseWriter, r *http.Request) {
 	}
 	total, err := db.CountSessions(store.SessionFilter{
 		Agent: agent, Workspace: workspace, SinceUnix: since, UntilUnix: until,
+		EndedMidTask: endedMidTask,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), 500)
