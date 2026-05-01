@@ -52,6 +52,7 @@ Usage:
   aii tui
   aii doctor
   aii cron    install|uninstall|status|run  # schedule background indexing
+  aii version                                # print version and exit
 
 The database lives at $AII_DB or ~/.local/share/aii/aii.db.
 `
@@ -62,6 +63,12 @@ func main() {
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
+
+	// Top-level --version / -v / -V short-circuits before signal setup.
+	if cmd == "--version" || cmd == "-version" || cmd == "-v" || cmd == "-V" {
+		fmt.Println(aiiVersion)
+		return
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -94,6 +101,8 @@ func main() {
 		err = cmdMCP(ctx, args)
 	case "cron":
 		err = cmdCron(args)
+	case "version":
+		fmt.Println(aiiVersion)
 	case "help", "-h", "--help":
 		if helpAsJSON(args) {
 			err = cmdHelpJSON()
@@ -1196,6 +1205,7 @@ func cmdHelpJSON() error {
 			{"ui", "Serve + open browser (alias: web)", "aii ui [--addr 127.0.0.1:8723]", nil},
 			{"tui", "Two-pane bubbletea search UI", "aii tui", nil},
 			{"mcp", "Run as an MCP server over stdio — callable as a tool from coding agents", "aii mcp", nil},
+			{"version", "Print the aii version and exit", "aii version", nil},
 		},
 	}
 	enc := json.NewEncoder(os.Stdout)
@@ -1307,6 +1317,7 @@ func cmdTUI(_ context.Context, _ []string) error {
 func cmdDoctor() error {
 	home, _ := os.UserHomeDir()
 	dbPath := store.DefaultPath()
+	fmt.Println("aii", aiiVersion)
 	fmt.Println("DB:", dbPath)
 
 	info, err := os.Stat(dbPath)
