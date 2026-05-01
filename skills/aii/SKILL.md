@@ -65,15 +65,21 @@ copy-pasteable and round-trips to `get_session` / `aii show`.
 | `stats`          | Sanity check; only if you suspect the index is empty            |
 
 `search(query, agent?, workspace?, role?, since?, limit?, offset?)`
-`list_sessions(agent?, workspace?, since?, until?, limit?, offset?, order?)`
+`list_sessions(agent?, workspace?, since?, until?, limit?, offset?, order?, ended_mid_task?)`
 `get_session(session, around?, span?, from?, to?, role?, max_msg_chars?)`
 `related(session, limit?, agent?, since?)`
+
+`list_sessions` with `ended_mid_task=true` returns sessions whose
+final message was from the user or a tool — i.e. interrupted threads
+where the assistant never responded. Useful for "what did I leave
+unfinished?" questions.
 
 ## CLI fallback
 
 ```sh
 aii search 'webhook retry' --limit 5 --max-bytes 8000
-aii sessions --since 7d --agent cc           # browse a time window
+aii sessions --since 7d --agent cc                    # browse a time window
+aii sessions --since 7d --ended-mid-task              # only interrupted threads
 aii show cc/32e869ac:319 --span 3 --max-msg-chars 2000 --format ndjson
 aii related 32e869ac --limit 5
 aii help --json                      # schema of commands + flags
