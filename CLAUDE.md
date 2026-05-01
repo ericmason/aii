@@ -28,3 +28,18 @@ At release time, `scripts/release.sh` will rename `## [Unreleased]` to
 `## [X.Y.Z] - YYYY-MM-DD` and insert a fresh empty `[Unreleased]`
 heading. The script refuses to release if `[Unreleased]` is empty, so
 the rule is self-enforcing.
+
+## Install after every release
+
+Immediately after `scripts/release.sh` succeeds, rebuild and install
+the binary to the path the user actually runs from:
+
+```bash
+go build -o ~/.local/bin/aii ./cmd/aii
+aii version   # confirm the new version is live
+```
+
+The release script tags GitHub but does not touch the local binary,
+and `~/.local/bin/aii` (not `~/go/bin/aii`) is what's on PATH. Skipping
+this step leaves the user invoking the old version and makes any
+post-release smoke test misleading.
