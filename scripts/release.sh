@@ -29,6 +29,7 @@ fi
 cd "$(git rev-parse --show-toplevel)"
 
 VERSION_FILE="cmd/aii/main.go"
+CHANGELOG="CHANGELOG.md"
 CURRENT=$(sed -n 's/^const aiiVersion = "\(.*\)"$/\1/p' "$VERSION_FILE")
 [[ -n "$CURRENT" ]] || die "can't find aiiVersion in $VERSION_FILE"
 
@@ -67,6 +68,18 @@ BRANCH=$(git rev-parse --abbrev-ref HEAD)
 command -v gh >/dev/null || die "gh CLI not on PATH (install https://cli.github.com)"
 gh auth status >/dev/null 2>&1 || die "gh not authenticated (run 'gh auth login')"
 
+# Require a non-empty [Unreleased] section in CHANGELOG.md when bumping.
+# `current` mode skips the check — it's used for the first release on a
+# fresh repo where the file may not exist yet.
+if [[ -f "$CHANGELOG" && "$NEW" != "$CURRENT" ]]; then
+    UNRELEASED=$(awk '
+        /^## \[Unreleased\]/ { in_section=1; next }
+        /^## \[/             { in_section=0 }
+        in_section && /[^[:space:]]/ { print }
+    ' "$CHANGELOG")
+    [[ -n "$UNRELEASED" ]] || die "CHANGELOG.md [Unreleased] section is empty — add an entry before releasing"
+fi
+
 # --- bump + build --------------------------------------------------------
 
 if [[ "$NEW" != "$CURRENT" ]]; then
@@ -83,10 +96,34 @@ fi
 echo "running go build..."
 go build ./... >/dev/null || die "build failed after bump"
 
+# Stamp [Unreleased] → [NEW] - DATE in CHANGELOG.md and reset the
+# Unreleased heading. Also rewrite the comparison-link footnotes.
+if [[ -f "$CHANGELOG" && "$NEW" != "$CURRENT" ]]; then
+    DATE=$(date -u +%Y-%m-%d)
+    tmp=$(mktemp)
+    awk -v new="$NEW" -v date="$DATE" -v current="$CURRENT" '
+        /^## \[Unreleased\]/ && !stamped {
+            print "## [Unreleased]"
+            print ""
+            print "## [" new "] - " date
+            stamped=1
+            next
+        }
+        /^\[Unreleased\]:/ {
+            print "[Unreleased]: https://github.com/ericmason/aii/compare/v" new "...HEAD"
+            print "[" new "]: https://github.com/ericmason/aii/compare/v" current "...v" new
+            next
+        }
+        { print }
+    ' "$CHANGELOG" > "$tmp"
+    mv "$tmp" "$CHANGELOG"
+fi
+
 # --- commit, tag, push, release -----------------------------------------
 
 if [[ "$NEW" != "$CURRENT" ]]; then
     git add "$VERSION_FILE"
+    [[ -f "$CHANGELOG" ]] && git add "$CHANGELOG"
     git commit -m "Release $TAG"
 fi
 
