@@ -8,6 +8,22 @@ called out under **Changed** when they happen.
 
 ## [Unreleased]
 
+### Added
+- `aii show --last --workspace DIR` (use `.` for the current directory)
+  picks the most recent session in that workspace — handy when a fresh
+  agent wants to pick up where the last one left off. By default the
+  command skips any session whose transcript was touched in the last
+  ~30 seconds, so a newly-started agent doesn't see its own in-flight
+  session; pass `--include-active` to include it. The live file mtime
+  is stat'd at call time so the filter works even when the index is
+  minutes stale.
+
+### Changed
+- `--workspace` on `aii search`, `aii sessions`, `aii ask`, and the new
+  `aii show --last --workspace` all resolve relative paths (including
+  `.`) against the current directory. Previously `--workspace .`
+  silently matched nothing because the index stores absolute paths.
+
 ## [0.5.0] - 2026-05-01
 
 ### Added

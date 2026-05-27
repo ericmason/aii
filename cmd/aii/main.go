@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -44,7 +45,7 @@ Usage:
   aii sessions [--agent ..] [--workspace DIR] [--since 7d] [--until ..]
                 [--limit 50] [--offset 0] [--order asc|desc]
                 [--json|--ndjson|--pretty | --format pretty|json|ndjson]
-  aii show    <session-uid> | --last
+  aii show    <session-uid> | --last [--workspace DIR]
                 [--format md|plain|ndjson | --ndjson | --pretty]
   aii ask     <question> [--k 6] [--context 2] [--agent ..] [--since ..]
                          [--cmd "claude -p"] [--dry-run] [--show-sources]
@@ -260,7 +261,7 @@ func cmdSearch(args []string) error {
 	results, err := db.Search(store.Query{
 		Text:      q,
 		Agent:     normalizeAgent(*agent),
-		Workspace: *workspace,
+		Workspace: resolveWorkspaceFlag(*workspace),
 		Role:      normalizeRole(*role),
 		SinceUnix: sinceUnix,
 		Limit:     *limit,
@@ -531,7 +532,7 @@ func cmdSessions(args []string) error {
 
 	items, err := db.ListSessions(store.SessionFilter{
 		Agent:        normalizeAgent(*agent),
-		Workspace:    *workspace,
+		Workspace:    resolveWorkspaceFlag(*workspace),
 		SinceUnix:    sinceUnix,
 		UntilUnix:    untilUnix,
 		Limit:        *limit,
@@ -686,7 +687,7 @@ func cmdAsk(ctx context.Context, args []string) error {
 	results, err := db.Search(store.Query{
 		Text:      question,
 		Agent:     normalizeAgent(*agent),
-		Workspace: *workspace,
+		Workspace: resolveWorkspaceFlag(*workspace),
 		SinceUnix: sinceUnix,
 		Limit:     *k,
 	})
@@ -818,6 +819,8 @@ func resolveAskCmd(flag string) string {
 func cmdShow(args []string) error {
 	fs := flag.NewFlagSet("show", flag.ExitOnError)
 	last := fs.Bool("last", false, "show most recent session")
+	workspace := fs.String("workspace", "", "scope --last to this workspace ('.' = current directory)")
+	includeActive := fs.Bool("include-active", false, "with --last --workspace, also consider sessions whose transcript was touched in the last 30s (default: skip them so a fresh agent doesn't see itself)")
 	format := fs.String("format", "", "md|plain|ndjson (default md)")
 	ndjsonOut := fs.Bool("ndjson", false, "alias for --format ndjson — matches the search/sessions flag")
 	jsonOut := fs.Bool("json", false, "alias for --format ndjson (single-session JSON is line-delimited)")
@@ -844,9 +847,25 @@ func cmdShow(args []string) error {
 	}
 	defer db.Close()
 
+	ws := resolveWorkspaceFlag(*workspace)
+	if ws != "" && !*last {
+		return errors.New("--workspace only applies with --last (give a UID for a specific session)")
+	}
+
 	var session *store.Session
 	if *last {
-		session, err = db.LatestSession()
+		if ws != "" {
+			session, err = pickLatestInWorkspace(db, ws, *includeActive)
+			if err == nil && session == nil {
+				hint := ""
+				if !*includeActive {
+					hint = " (the most recent transcript may still be active — pass --include-active to include it)"
+				}
+				return fmt.Errorf("no prior indexed sessions found in workspace %s%s", ws, hint)
+			}
+		} else {
+			session, err = db.LatestSession()
+		}
 	} else {
 		if fs.NArg() == 0 {
 			return errors.New("show requires a session UID or --last")
@@ -874,6 +893,51 @@ func cmdShow(args []string) error {
 	rows = filterRows(rows, normalizeRole(*role), *maxMsgChars)
 
 	return renderSession(os.Stdout, *session, rows, resolvedFormat, *maxBytes)
+}
+
+// activeTranscriptWindow is how recently the live JSONL file must have
+// been touched for a session to look "still active". Tuned to outlast
+// the gap between an agent appending a message and aii running its
+// next pick — but short enough that a session that ended a minute ago
+// is still findable.
+const activeTranscriptWindow = 30 * time.Second
+
+// pickLatestInWorkspace returns the most recent session in ws, optionally
+// skipping ones whose source transcript was modified within the last
+// activeTranscriptWindow. Skipping is the default because the typical
+// caller is a fresh agent asking "what was happening here before me?"
+// and doesn't want to see its own in-flight session.
+//
+// We stat the file at call time rather than trusting the indexed
+// source_mtime_ns — that column is only refreshed when the indexer
+// runs (potentially minutes ago), so it under-reports activity.
+func pickLatestInWorkspace(db *store.DB, ws string, includeActive bool) (*store.Session, error) {
+	limit := 1
+	if !includeActive {
+		// One safety candidate beyond the active one is plenty —
+		// two truly-active sessions in the same workspace at once
+		// would be unusual, and even then the second-newest is what
+		// the caller wants.
+		limit = 5
+	}
+	cands, err := db.LatestSessionsByWorkspace(ws, limit)
+	if err != nil {
+		return nil, err
+	}
+	if includeActive {
+		if len(cands) == 0 {
+			return nil, nil
+		}
+		return cands[0], nil
+	}
+	cutoff := time.Now().Add(-activeTranscriptWindow)
+	for _, s := range cands {
+		if fi, err := os.Stat(s.SourcePath); err == nil && fi.ModTime().After(cutoff) {
+			continue
+		}
+		return s, nil
+	}
+	return nil, nil
 }
 
 // resolveShowFormat folds --format and the boolean aliases (--ndjson,
@@ -1277,7 +1341,10 @@ func cmdHelpJSON() error {
 				{"--ended-mid-task", "", "only sessions whose final message was from user or tool — interrupted / unfinished"},
 				{"--format", "", "pretty|json|ndjson — alternative spelling of --pretty/--json/--ndjson"},
 			}},
-			{"show", "Print a single session — full, sliced, or as ndjson", "aii show <uid>|--last [--around N --span M] [--from N --to M] [--role ..] [--format md|plain|ndjson | --ndjson | --pretty] [--max-msg-chars N] [--max-bytes N]", []flagInfo{
+			{"show", "Print a single session — full, sliced, or as ndjson", "aii show <uid>|--last [--workspace DIR] [--around N --span M] [--from N --to M] [--role ..] [--format md|plain|ndjson | --ndjson | --pretty] [--max-msg-chars N] [--max-bytes N]", []flagInfo{
+				{"--last", "", "pick the most recent session (scope to a directory with --workspace)"},
+				{"--workspace", "", "with --last, only consider sessions whose workspace matches (use '.' for the current directory)"},
+				{"--include-active", "", "with --last --workspace, don't skip sessions whose transcript was touched in the last 30s — by default they're skipped so a fresh agent picking up doesn't see its own in-flight session"},
 				{"--around", "", "anchor on an ordinal and include ±span around it"},
 				{"--from/--to", "", "inclusive ordinal range"},
 				{"--format", "md", "md for humans, ndjson for agents (one message per line)"},
@@ -1451,6 +1518,26 @@ func cmdDoctor() error {
 
 // --- helpers -----------------------------------------------------------
 
+// resolveWorkspaceFlag normalizes a --workspace value the same way a user
+// would expect: empty stays empty (no filter), absolute paths pass
+// through unchanged, and relatives (including ".") resolve against the
+// current working directory. Without this, `--workspace .` silently
+// matched nothing because the index stores absolute paths.
+func resolveWorkspaceFlag(ws string) string {
+	ws = strings.TrimSpace(ws)
+	if ws == "" {
+		return ""
+	}
+	if filepath.IsAbs(ws) {
+		return filepath.Clean(ws)
+	}
+	abs, err := filepath.Abs(ws)
+	if err != nil {
+		return ws
+	}
+	return abs
+}
+
 func normalizeAgent(a string) string {
 	switch strings.ToLower(a) {
 	case "", "all":
@@ -1527,7 +1614,8 @@ func reorderFlags(in []string) []string {
 		"--dry-run": true, "-dry-run": true, "--show-sources": true, "-show-sources": true,
 		"--no-redact": true, "-no-redact": true, "--redact-sources": true, "-redact-sources": true,
 		"--quiet": true, "-quiet": true,
-		"--ended-mid-task": true, "-ended-mid-task": true}
+		"--ended-mid-task": true, "-ended-mid-task": true,
+		"--include-active": true, "-include-active": true}
 	var flags, rest []string
 	for i := 0; i < len(in); i++ {
 		a := in[i]

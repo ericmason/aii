@@ -328,6 +328,39 @@ func (d *DB) LatestSession() (*Session, error) {
 	return s, nil
 }
 
+// LatestSessionsByWorkspace returns up to limit most recent sessions in
+// the given workspace, newest first. Callers that want to skip
+// still-active transcripts can stat each session's SourcePath and pick
+// the first one whose live mtime is older than their threshold — we
+// can't filter on that here because the stored source_mtime_ns is only
+// refreshed when the indexer runs, which may be minutes stale.
+func (d *DB) LatestSessionsByWorkspace(ws string, limit int) ([]*Session, error) {
+	if limit <= 0 {
+		limit = 1
+	}
+	rows, err := d.Query(`SELECT id, agent, session_uid, COALESCE(workspace,''), COALESCE(title,''),
+                                 COALESCE(summary,''),
+                                 COALESCE(started_at,0), COALESCE(ended_at,0), source_path,
+                                 source_mtime_ns, source_size
+                          FROM sessions WHERE workspace = ?
+                          ORDER BY COALESCE(ended_at, started_at) DESC LIMIT ?`, ws, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Session
+	for rows.Next() {
+		s := &Session{}
+		if err := rows.Scan(&s.ID, &s.Agent, &s.UID, &s.Workspace, &s.Title, &s.Summary,
+			&s.StartedAt, &s.EndedAt,
+			&s.SourcePath, &s.SourceMtimeNs, &s.SourceSize); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 type Row struct {
 	Ordinal int
 	Role    string

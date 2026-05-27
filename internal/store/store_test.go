@@ -201,6 +201,49 @@ func TestSearch_RespectsLimitAndOffset(t *testing.T) {
 	}
 }
 
+func TestLatestSessionsByWorkspace(t *testing.T) {
+	db := openTestDB(t)
+	seed(t, db, &Session{
+		Agent: "claudecode", UID: "old-a", Workspace: "/ws/foo",
+		StartedAt: 100, EndedAt: 200, SourcePath: "/tmp/old-a.jsonl",
+	}, nil)
+	seed(t, db, &Session{
+		Agent: "claudecode", UID: "new-a", Workspace: "/ws/foo",
+		StartedAt: 1000, EndedAt: 1100, SourcePath: "/tmp/new-a.jsonl",
+	}, nil)
+	seed(t, db, &Session{
+		Agent: "claudecode", UID: "other-ws", Workspace: "/ws/bar",
+		StartedAt: 2000, EndedAt: 2100, SourcePath: "/tmp/other.jsonl",
+	}, nil)
+
+	got, err := db.LatestSessionsByWorkspace("/ws/foo", 5)
+	if err != nil {
+		t.Fatalf("LatestSessionsByWorkspace: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d sessions, want 2 (only /ws/foo)", len(got))
+	}
+	if got[0].UID != "new-a" || got[1].UID != "old-a" {
+		t.Errorf("got order %s,%s — want newest first (new-a,old-a)", got[0].UID, got[1].UID)
+	}
+
+	got, err = db.LatestSessionsByWorkspace("/ws/foo", 1)
+	if err != nil {
+		t.Fatalf("LatestSessionsByWorkspace limit=1: %v", err)
+	}
+	if len(got) != 1 || got[0].UID != "new-a" {
+		t.Errorf("limit=1: got %+v, want [new-a]", got)
+	}
+
+	got, err = db.LatestSessionsByWorkspace("/ws/nonexistent", 5)
+	if err != nil {
+		t.Fatalf("LatestSessionsByWorkspace empty: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("nonexistent workspace returned %d sessions, want 0", len(got))
+	}
+}
+
 func TestSearch_EmptyQueryReturnsNothing(t *testing.T) {
 	db := openTestDB(t)
 	seed(t, db, &Session{

@@ -141,6 +141,17 @@ Then expand the best hit:
 aii show cc/abc12345:42 --span 5 --role user --max-msg-chars 2000
 ```
 
+### Pick up where the last agent left off
+
+```sh
+aii show --last --workspace . --role assistant --max-msg-chars 2000
+```
+
+Returns the most recent session in the current directory, defaulting to
+skipping any session whose transcript was touched in the last ~30s — so
+a fresh agent doesn't pull its own in-flight session. Add
+`--include-active` to override.
+
 ### Find the fix for a recurring issue
 
 ```sh
