@@ -26,6 +26,53 @@ Indexed sources:
 
 ## Install
 
+### One-line install (macOS / Linux)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ericmason/aii/main/scripts/install.sh | sh
+```
+
+No Go toolchain required. This downloads the right prebuilt static
+binary for your platform from the latest
+[release](https://github.com/ericmason/aii/releases), verifies its
+SHA-256 checksum, and installs it to `~/.local/bin/aii`.
+
+Pin a version or change the target directory:
+
+```sh
+AII_VERSION=v0.5.1 curl -fsSL https://raw.githubusercontent.com/ericmason/aii/main/scripts/install.sh | sh
+AII_INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/ericmason/aii/main/scripts/install.sh | sh
+```
+
+### Manual download
+
+Every release ships prebuilt static binaries on the [releases
+page](https://github.com/ericmason/aii/releases/latest). Each archive is
+named `aii-<version>-<os>-<arch>.(tar.gz|zip)` and contains a single
+`aii` binary (`aii.exe` on Windows). Pick the one for your platform:
+
+| OS      | Apple Silicon / ARM      | Intel / x86-64           |
+|---------|--------------------------|--------------------------|
+| macOS   | `darwin-arm64` (.tar.gz) | `darwin-amd64` (.tar.gz) |
+| Linux   | `linux-arm64` (.tar.gz)  | `linux-amd64` (.tar.gz)  |
+| Windows | `windows-arm64` (.zip)   | `windows-amd64` (.zip)   |
+
+For example, on Apple Silicon macOS:
+
+```sh
+ver=v0.5.1
+curl -fsSLO https://github.com/ericmason/aii/releases/download/$ver/aii-$ver-darwin-arm64.tar.gz
+tar xzf aii-$ver-darwin-arm64.tar.gz
+mv aii-$ver-darwin-arm64/aii ~/.local/bin/
+```
+
+Each release also publishes `SHA256SUMS` if you want to verify the
+download. Make sure your install dir is on `PATH` — `~/.local/bin`
+usually is; otherwise add `export PATH="$HOME/.local/bin:$PATH"` to your
+shell rc.
+
+### From source (Go developers)
+
 ```sh
 go install github.com/ericmason/aii/cmd/aii@latest
 ```

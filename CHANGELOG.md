@@ -8,6 +8,21 @@ called out under **Changed** when they happen.
 
 ## [Unreleased]
 
+### Added
+- One-line install script for macOS and Linux — no Go toolchain
+  required: `curl -fsSL
+  https://raw.githubusercontent.com/ericmason/aii/main/scripts/install.sh
+  | sh` auto-detects your OS/arch, downloads the matching prebuilt
+  binary from the latest GitHub release, verifies its SHA-256 checksum,
+  and installs it to `~/.local/bin`. Override the target dir with
+  `AII_INSTALL_DIR` or pin a version with `AII_VERSION`.
+
+### Changed
+- README install instructions now lead with the one-line installer and
+  manual prebuilt-binary download (with a per-platform asset table);
+  `go install` / `go build` are now documented as the "from source"
+  path for Go developers rather than the only option.
+
 ## [0.5.1] - 2026-05-27
 
 ### Added
