@@ -23,8 +23,10 @@ import (
 // dataDir is the parent of the DB — also where the lock and stamp live.
 func dataDir() string { return filepath.Dir(store.DefaultPath()) }
 
-func lockPath() string  { return filepath.Join(dataDir(), ".index.lock") }
-func stampPath() string { return filepath.Join(dataDir(), ".last-index") }
+func lockPath() string     { return filepath.Join(dataDir(), ".index.lock") }
+func stampPath() string    { return filepath.Join(dataDir(), ".last-index") }
+func syncLockPath() string { return filepath.Join(dataDir(), ".sync.lock") }
+func syncStampPath() string { return filepath.Join(dataDir(), ".last-sync") }
 
 // warnStaleAfter is the grace period before query commands nag the
 // user about a stale index. Cron default is 5 min, so a healthy install
@@ -61,15 +63,20 @@ func markIndexed() {
 // acquireIndexLock atomically claims the per-DB index lock. Returns a
 // release function (idempotent) and ok=true on success. ok=false means
 // another indexer holds it; the returned PID is informational.
+func acquireIndexLock() (release func(), ok bool, otherPID int) {
+	return acquireLockAt(lockPath())
+}
+
+// acquireLockAt claims a PID lockfile (the index lock, the sync lock).
 //
 // Stale locks (lockfile present, owning PID dead) are silently reaped
 // and re-acquired — common after a crash or kill -9.
-func acquireIndexLock() (release func(), ok bool, otherPID int) {
+func acquireLockAt(path string) (release func(), ok bool, otherPID int) {
 	if err := os.MkdirAll(dataDir(), 0o755); err != nil {
 		return func() {}, false, 0
 	}
 	for attempt := 0; attempt < 2; attempt++ {
-		f, err := os.OpenFile(lockPath(), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
 			fmt.Fprintf(f, "%d\n", os.Getpid())
 			f.Close()
@@ -79,19 +86,19 @@ func acquireIndexLock() (release func(), ok bool, otherPID int) {
 					return
 				}
 				released = true
-				_ = os.Remove(lockPath())
+				_ = os.Remove(path)
 			}, true, 0
 		}
 		if !errors.Is(err, os.ErrExist) {
 			return func() {}, false, 0
 		}
 		// Lock exists. Check if owner is alive.
-		pid := readLockPID()
+		pid := readLockPIDAt(path)
 		if pid > 0 && processAlive(pid) {
 			return func() {}, false, pid
 		}
 		// Stale — owner gone. Remove and retry once.
-		_ = os.Remove(lockPath())
+		_ = os.Remove(path)
 	}
 	return func() {}, false, 0
 }
@@ -99,7 +106,7 @@ func acquireIndexLock() (release func(), ok bool, otherPID int) {
 // indexLocked reports whether the lock is currently held by a live
 // process — without trying to acquire it. Used by `aii cron status`.
 func indexLocked() (bool, int) {
-	pid := readLockPID()
+	pid := readLockPIDAt(lockPath())
 	if pid <= 0 {
 		return false, 0
 	}
@@ -110,8 +117,8 @@ func indexLocked() (bool, int) {
 	return true, pid
 }
 
-func readLockPID() int {
-	b, err := os.ReadFile(lockPath())
+func readLockPIDAt(path string) int {
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return 0
 	}

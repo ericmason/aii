@@ -153,7 +153,7 @@ changes.
 ### Module layout
 
 ```
-cmd/aii/                 # CLI. One package, main.go + color.go.
+cmd/aii/                 # CLI. One package: main.go, color.go, sync.go, cron.go…
 internal/source/         # source.Source interface + per-agent parsers.
 internal/source/claudecode
 internal/source/codex
@@ -161,6 +161,8 @@ internal/source/cursor
 internal/indexer/        # orchestrates Sources → single writer goroutine
 internal/redact/         # regex-based secret scrubber used by the indexer
 internal/store/          # sqlite schema, hybrid FTS search, migrations
+internal/cloudsync/      # E2EE cross-machine sync engine (age + HMAC)
+internal/cloudsync/remote# Remote iface: dir backend + S3 (stdlib SigV4)
 internal/web/            # local HTTP UI + assets (embed.FS)
 internal/tui/            # bubbletea two-pane UI
 internal/mcpserver/      # stdio MCP server wrapping store
@@ -168,8 +170,11 @@ internal/mcpserver/      # stdio MCP server wrapping store
 
 Dependencies kept minimal: `modernc.org/sqlite` (pure Go),
 `charmbracelet/bubbletea+bubbles+lipgloss`, `mark3labs/mcp-go`,
+`filippo.io/age` + `golang.org/x/crypto`/`x/term` (sync),
 `mattn/go-isatty` (indirect). **Don't add cgo.** The "one static
-binary, zero network" promise is the whole design.
+binary, local-first" promise is the whole design: the ONLY code that
+may touch the network is `internal/cloudsync` behind the explicit
+`aii sync` opt-in (and `aii ask` shelling to a local CLI).
 
 ### Key invariants
 
@@ -189,6 +194,23 @@ binary, zero network" promise is the whole design.
   stay `AS MATERIALIZED` — the planner otherwise tries to inline
   `bm25()`/`snippet()` into window functions and errors with
   "unable to use function bm25 in the requested context".
+- **Sync invariants** (`internal/cloudsync`):
+  - Pull-imported sessions get synthetic `aii-sync://` source paths
+    (`store.SyntheticSourcePath`). Never write one from an indexer
+    path, and never let a pull overwrite a real path — that's what
+    `UpsertSessionFromSync` exists for.
+  - Remote bundle objects are immutable: written only via
+    `PutIfAbsent`, never overwritten. New content = new version key
+    `bundles/<name>/<epoch>-<count>-<head8>.age`.
+  - Consistency is hash-chain prefix + epoch, never raw message
+    counts. Divergence supersedes (epoch bump); it must never be
+    merged by ordinal.
+  - Bundles are Encrypt-then-MAC; verify the MAC (which binds the
+    object key) before any decryption. The age recipient key never
+    lands on the remote in plaintext.
+  - Lock discipline: `.sync.lock` serializes the sync workflow;
+    `.index.lock` is taken only around local SQLite apply phases.
+    Network I/O must never run while holding `.index.lock`.
 
 ### Adding a new source
 
