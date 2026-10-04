@@ -439,12 +439,11 @@ func (e *Engine) Push(ctx context.Context, dryRun bool) (PushStats, error) {
 	if err != nil {
 		return st, err
 	}
-	st.GCed = e.gc(ctx, rem, dryRun)
-
-	locals, _, err := e.localSessions()
+	locals, byName, err := e.localSessions()
 	if err != nil {
 		return st, err
 	}
+	st.GCed = e.gc(ctx, rem, byName, dryRun)
 	tombCache := map[string]bool{}
 
 	for _, l := range locals {
@@ -623,17 +622,20 @@ func (e *Engine) saveChainState(l *localSession, epoch int64, count int, head ch
 
 // gc deletes remote versions strictly superseded by a version present
 // in this same listing — meaning the superseding object is durably
-// visible before anything is removed. Conflict siblings (same epoch
-// and count, different head) are never collected; tombstones never
-// expire.
-func (e *Engine) gc(ctx context.Context, rem map[string]*remoteName, dryRun bool) int {
+// visible before anything is removed. A lower epoch is always
+// superseded. At the same epoch, a shorter version goes only when it
+// is provably an ancestor of best, so a divergent sibling survives
+// whatever its length. Tombstones never expire.
+func (e *Engine) gc(ctx context.Context, rem map[string]*remoteName, byName map[string]*localSession, dryRun bool) int {
 	n := 0
 	for name, rn := range rem {
 		if rn.best == nil {
 			continue
 		}
+		ancestorOfBest := e.ancestorChecker(name, rn, byName)
 		for _, v := range rn.versions {
-			superseded := v.Epoch < rn.best.Epoch || (v.Epoch == rn.best.Epoch && v.Count < rn.best.Count)
+			superseded := v.Epoch < rn.best.Epoch ||
+				(v.Epoch == rn.best.Epoch && v.Count < rn.best.Count && ancestorOfBest(v))
 			if !superseded {
 				continue
 			}
@@ -655,6 +657,46 @@ func (e *Engine) gc(ctx context.Context, rem map[string]*remoteName, dryRun bool
 		}
 	}
 	return n
+}
+
+// ancestorChecker returns a predicate reporting whether a shorter
+// same-epoch version is an ancestor of rn.best rather than a divergent
+// sibling that happens to be shorter. A listing carries only counts
+// and chain heads, so the evidence has to come from content: when best
+// is exactly the local copy's chain, chainAt over the local rows
+// reproduces the head of every prefix of best, and a version whose
+// head matches at its own count is an ancestor. With no local copy, or
+// one that is not what best holds, nothing is collected.
+func (e *Engine) ancestorChecker(name string, rn *remoteName, byName map[string]*localSession) func(version) bool {
+	var (
+		loaded bool
+		l      *localSession
+		rows   []store.Row
+	)
+	return func(v version) bool {
+		if !loaded {
+			loaded = true
+			l = byName[name]
+			if l == nil {
+				return false
+			}
+			r, err := e.DB.SessionMessages(l.item.ID)
+			if err != nil {
+				e.warnf("gc %s: read local messages: %v", name, err)
+				l = nil
+				return false
+			}
+			if rn.best.Count != len(r) || rn.best.Head8 != head8(computeChain(l.item.Agent, l.item.UID, r)) {
+				l = nil
+				return false
+			}
+			rows = r
+		}
+		if l == nil {
+			return false
+		}
+		return v.Count <= len(rows) && v.Head8 == head8(chainAt(l.item.Agent, l.item.UID, rows, v.Count))
+	}
 }
 
 // --- pull ---------------------------------------------------------------
@@ -924,9 +966,20 @@ func (e *Engine) applyBundle(b *Bundle) (applyResult, int, error) {
 			}
 			res, newMsgs = applySuperseded, len(b.Messages)
 		default:
-			// Same epoch, incompatible histories: keep local; our
-			// next push bumps the epoch and the repo converges.
+			// Same epoch, incompatible histories: keep local content
+			// and claim the next epoch here, so the next push really
+			// does supersede. Push cannot make that decision when the
+			// remote is the longer side — it defers to the pull — so
+			// without this bump neither side ever moves and the
+			// session stays in conflict forever.
 			e.warnf("%s/%s diverged from the remote copy — keeping local; next push will supersede", b.Agent, shortUID(b.SessionUID))
+			localHead := computeChain(b.Agent, b.SessionUID, localRows)
+			if err := e.DB.SaveSyncState(store.SyncState{
+				Agent: b.Agent, UID: b.SessionUID,
+				Epoch: localEpoch + 1, ChainCount: len(localRows), ChainHash: localHead[:],
+			}); err != nil {
+				return 0, 0, err
+			}
 			return applyConflict, 0, nil
 		}
 	}

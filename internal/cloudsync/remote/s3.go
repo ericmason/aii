@@ -232,7 +232,7 @@ func (s *S3) List(ctx context.Context, prefix string) ([]Object, error) {
 		if token != "" {
 			q.Set("continuation-token", token)
 		}
-		body, _, err := s.do(ctx, http.MethodGet, "", q.Encode(), nil, nil)
+		body, _, err := s.do(ctx, http.MethodGet, "", awsEncodeQuery(q), nil, nil)
 		if err != nil {
 			return nil, fmt.Errorf("list: %w", err)
 		}
@@ -292,7 +292,28 @@ func (s *S3) PutIfAbsent(ctx context.Context, key string, data []byte) error {
 		} else if !errors.Is(gerr, ErrNotExist) {
 			return gerr
 		}
-		return s.Put(ctx, key, data)
+		if perr := s.Put(ctx, key, data); perr != nil {
+			return perr
+		}
+		if contentAddressed(key) {
+			// A lost race rewrote the same logical version under a
+			// name derived from its own content, so either copy is
+			// correct and nothing needs reconciling.
+			return nil
+		}
+		// keys/master.age and the repo marker are not derived from
+		// their content: a concurrent writer's bytes would silently
+		// replace ours and we would keep encrypting under a key no
+		// peer can unwrap. Read back and report a lost race, which
+		// callers already handle by joining the winner.
+		got, gerr := s.Get(ctx, key)
+		if gerr != nil {
+			return gerr
+		}
+		if !bytes.Equal(got, data) {
+			return ErrExists
+		}
+		return nil
 	default:
 		return fmt.Errorf("put-if-absent %s: %w", key, err)
 	}

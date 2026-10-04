@@ -9,8 +9,20 @@ package remote
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 )
+
+// contentAddressed reports whether a key names its own contents, so
+// two writers racing on it necessarily store equivalent objects. Every
+// key under bundles/ qualifies: a version key carries the epoch, the
+// message count, and the chain head, and a tombstone body is a MAC of
+// the name. Keys outside that tree (the wrapped master key, the repo
+// marker) do not, so a lost race on them replaces one writer's data
+// with another's.
+func contentAddressed(key string) bool {
+	return strings.HasPrefix(key, "bundles/")
+}
 
 var (
 	// ErrNotExist is returned by Get for a missing object.

@@ -205,6 +205,19 @@ may touch the network is `internal/cloudsync` behind the explicit
   - Consistency is hash-chain prefix + epoch, never raw message
     counts. Divergence supersedes (epoch bump); it must never be
     merged by ordinal.
+  - Exactly one side resolves a same-epoch conflict, and it is the
+    pull: `applyBundle` keeps local content and claims the next epoch,
+    so the following push supersedes. Push can't do it — when the
+    remote is the longer side it has to defer — so if you remove the
+    bump, the session stays in conflict on both sides forever.
+  - GC only deletes a version it can prove is obsolete: any lower
+    epoch, or a shorter same-epoch version whose chain head matches a
+    prefix of the local copy that best holds. A shorter count alone is
+    not proof of ancestry — a divergent sibling can be shorter.
+  - `PutIfAbsent`'s check-then-put fallback (providers without
+    `If-None-Match`) is only safe for keys under `bundles/`, which name
+    their own contents. `keys/master.age` and the repo marker get a
+    read-back, and a mismatch is reported as `ErrExists`.
   - Bundles are Encrypt-then-MAC; verify the MAC (which binds the
     object key) before any decryption. The age recipient key never
     lands on the remote in plaintext.

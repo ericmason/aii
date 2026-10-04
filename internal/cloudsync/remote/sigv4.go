@@ -114,7 +114,16 @@ func canonicalQuery(u *url.URL) string {
 	if u.RawQuery == "" {
 		return ""
 	}
-	q := u.Query()
+	return awsEncodeQuery(u.Query())
+}
+
+// awsEncodeQuery renders query parameters the way SigV4 canonicalizes
+// them, so a caller can build RawQuery with it and get a wire query
+// that matches the signed canonical query byte for byte.
+// url.Values.Encode is not interchangeable: it writes a space as '+',
+// which canonicalQuery reads back as a space and re-escapes to %20,
+// so any key or prefix containing a space fails the signature check.
+func awsEncodeQuery(q url.Values) string {
 	keys := make([]string, 0, len(q))
 	for k := range q {
 		keys = append(keys, k)

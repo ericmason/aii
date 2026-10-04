@@ -70,6 +70,13 @@ type fakeS3 struct {
 	pageSize int
 	fail500  int  // fail the next N requests with a 500
 	no501    bool // if true, conditional PUT returns 501
+
+	// clobberOnce[key] stands in for a concurrent writer whose PUT
+	// lands last: the first PUT to that key is overwritten with
+	// these bytes as soon as it is stored.
+	clobberOnce map[string][]byte
+
+	lastListQuery string // raw query of the most recent list request
 }
 
 func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -97,6 +104,7 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case r.Method == http.MethodGet && key == "": // ListObjectsV2
+		f.lastListQuery = r.URL.RawQuery
 		prefix := r.URL.Query().Get("prefix")
 		start := 0
 		if tok := r.URL.Query().Get("continuation-token"); tok != "" {
@@ -162,6 +170,10 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			body = []byte(buf.String())
 		}
 		f.objects[key] = body
+		if v, ok := f.clobberOnce[key]; ok {
+			delete(f.clobberOnce, key)
+			f.objects[key] = v
+		}
 		w.WriteHeader(200)
 
 	case r.Method == http.MethodDelete:
@@ -260,6 +272,56 @@ func TestS3PutIfAbsentFallback501(t *testing.T) {
 	}
 	if err := s.PutIfAbsent(ctx, "keys/master.age", []byte("second")); !errors.Is(err, ErrExists) {
 		t.Fatalf("fallback second PutIfAbsent = %v, want ErrExists", err)
+	}
+}
+
+// On a provider without conditional writes, a lost race on a key that
+// is not content-addressed must be reported, not silently accepted:
+// the loser of an `aii sync init` race would otherwise keep a master
+// key no peer can unwrap.
+func TestS3PutIfAbsentFallbackReportsLostRace(t *testing.T) {
+	ctx := context.Background()
+	f := &fakeS3{
+		objects:  map[string][]byte{},
+		pageSize: 100,
+		no501:    true,
+		clobberOnce: map[string][]byte{
+			"repo/keys/master.age":      []byte("peer key"),
+			"repo/bundles/aa/1-1-x.age": []byte("peer bundle"),
+		},
+	}
+	s := newFakeS3(t, f)
+
+	if err := s.PutIfAbsent(ctx, "keys/master.age", []byte("our key")); !errors.Is(err, ErrExists) {
+		t.Fatalf("clobbered master key = %v, want ErrExists", err)
+	}
+	if string(f.objects["repo/keys/master.age"]) != "peer key" {
+		t.Fatalf("stored master key = %q, want the peer's", f.objects["repo/keys/master.age"])
+	}
+	// A bundle key names its own contents, so the race is harmless
+	// and costs no extra round trip.
+	if err := s.PutIfAbsent(ctx, "bundles/aa/1-1-x.age", []byte("our bundle")); err != nil {
+		t.Fatalf("bundle put-if-absent = %v, want success", err)
+	}
+}
+
+// List must build its query with AWS's escaping: url.Values.Encode
+// writes a space as '+', which the signer re-escapes to %20, so a
+// prefix containing a space would fail every signature check.
+func TestS3ListQueryMatchesSignedQuery(t *testing.T) {
+	ctx := context.Background()
+	f := &fakeS3{objects: map[string][]byte{}, pageSize: 100}
+	s := newFakeS3(t, f)
+
+	if _, err := s.List(ctx, "bundles/with space/"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(f.lastListQuery, "+") || !strings.Contains(f.lastListQuery, "%20") {
+		t.Fatalf("wire query = %q, want the space as %%20", f.lastListQuery)
+	}
+	signed := canonicalQuery(&url.URL{RawQuery: f.lastListQuery})
+	if signed != f.lastListQuery {
+		t.Fatalf("signed query %q does not match wire query %q", signed, f.lastListQuery)
 	}
 }
 

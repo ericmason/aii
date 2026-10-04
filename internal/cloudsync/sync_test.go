@@ -2,6 +2,7 @@ package cloudsync
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"os"
@@ -397,6 +398,120 @@ func TestSameEpochDivergenceConverges(t *testing.T) {
 	if !eq(a.contents(t, "claude_code", "u1"), b.contents(t, "claude_code", "u1")) {
 		t.Fatal("machines did not converge")
 	}
+}
+
+// A local copy that is shorter than the remote and incompatible with
+// it used to deadlock: push deferred to the longer remote, and pull
+// deferred to the next push, so the session stayed in conflict every
+// round. Pull now claims the next epoch, so the push supersedes.
+func TestShorterDivergedLocalConverges(t *testing.T) {
+	ctx := context.Background()
+	repo := newTestRepo(t)
+	a, b := newMachine(t, repo), newMachine(t, repo)
+
+	// Both machines indexed the same session independently, with
+	// different content, and A's copy is the longer one.
+	a.seed(t, "claude_code", "u1", "/a/u1.jsonl", "a0", "a1", "a2")
+	b.seed(t, "claude_code", "u1", "/b/u1.jsonl", "b0", "b1")
+	if _, err := a.eng.Push(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+
+	for round := 1; round <= 4; round++ {
+		for _, m := range []*machine{b, a} {
+			pl, err := m.eng.Pull(ctx, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ps, err := m.eng.Push(ctx, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if round == 4 && (pl.Conflicts != 0 || ps.Conflicts != 0) {
+				t.Fatalf("round %d still conflicting: pull %+v push %+v", round, pl, ps)
+			}
+		}
+		if round < 4 {
+			continue
+		}
+		if !eq(a.contents(t, "claude_code", "u1"), b.contents(t, "claude_code", "u1")) {
+			t.Fatalf("did not converge: A %v B %v",
+				a.contents(t, "claude_code", "u1"), b.contents(t, "claude_code", "u1"))
+		}
+	}
+	name := repo.keys.BundleName("claude_code", "u1")
+	objs, _ := repo.dir.List(ctx, "bundles/"+name+"/")
+	if countVersions(objs) != 1 {
+		t.Fatalf("remote holds %d versions after convergence, want 1", countVersions(objs))
+	}
+}
+
+// A divergent sibling must survive GC even when it is shorter than the
+// winning version, because a shorter count is no proof of ancestry.
+func TestGCKeepsShorterDivergentSibling(t *testing.T) {
+	ctx := context.Background()
+	repo := newTestRepo(t)
+	a := newMachine(t, repo)
+
+	a.seed(t, "claude_code", "u1", "/a/u1.jsonl", "m0", "m1", "m2")
+	if _, err := a.eng.Push(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	// A peer's own epoch-1 history, two messages long and divergent
+	// from A's at ordinal 0.
+	sibling := putVersion(t, repo, "claude_code", "u1", 1, "other0", "other1")
+	// ...and a true ancestor of A's history, which is collectable.
+	ancestor := putVersion(t, repo, "claude_code", "u1", 1, "m0", "m1")
+
+	ps, err := a.eng.Push(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ps.GCed != 1 {
+		t.Fatalf("push = %+v, want exactly the ancestor collected", ps)
+	}
+	name := repo.keys.BundleName("claude_code", "u1")
+	objs, _ := repo.dir.List(ctx, "bundles/"+name+"/")
+	have := map[string]bool{}
+	for _, o := range objs {
+		have[o.Key] = true
+	}
+	if !have[sibling] {
+		t.Errorf("GC deleted the divergent sibling %s", sibling)
+	}
+	if have[ancestor] {
+		t.Errorf("GC kept the ancestor %s", ancestor)
+	}
+}
+
+// putVersion writes one bundle version straight to the remote, the way
+// a peer machine would, without touching any local DB.
+func putVersion(t *testing.T, repo *testRepo, agent, uid string, epoch int64, contents ...string) string {
+	t.Helper()
+	rows := make([]store.Row, len(contents))
+	msgs := make([]BundleMessage, len(contents))
+	for i, c := range contents {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		rows[i] = store.Row{Ordinal: i, Role: role, TS: 1700000000 + int64(i)*60, Content: c}
+		msgs[i] = BundleMessage{Ordinal: i, Role: role, TS: rows[i].TS, Content: c}
+	}
+	head := computeChain(agent, uid, rows)
+	key := versionKey(repo.keys.BundleName(agent, uid), epoch, len(rows), head)
+	blob, err := EncodeBundle(&Bundle{
+		Format: FormatVersion, Agent: agent, SessionUID: uid, Workspace: "/ws",
+		Title: contents[0], StartedAt: 1700000000, EndedAt: 1700000000 + int64(len(contents)*60),
+		Epoch: epoch, ChainHead: hex.EncodeToString(head[:]), Messages: msgs,
+	}, repo.keys, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.dir.PutIfAbsent(context.Background(), key, blob); err != nil {
+		t.Fatal(err)
+	}
+	return key
 }
 
 func TestPurge(t *testing.T) {

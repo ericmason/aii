@@ -36,8 +36,10 @@ const (
 	bundleMagic   = "aiisync1"
 	FormatVersion = 1
 
-	// maxBundlePlaintext caps gzip expansion (decompression-bomb guard).
-	maxBundlePlaintext = 2 << 30
+	// maxBundlePlaintext caps gzip expansion (decompression-bomb
+	// guard). Typed int64 because an untyped 2 GiB constant does not
+	// fit in an int on a 32-bit build.
+	maxBundlePlaintext int64 = 2 << 30
 )
 
 type BundleMessage struct {
@@ -193,7 +195,7 @@ func DecodeBundle(data []byte, keys *Keys, objectKey string) (*Bundle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decompress: %w", err)
 	}
-	if len(plain) > maxBundlePlaintext {
+	if int64(len(plain)) > maxBundlePlaintext {
 		return nil, errors.New("bundle plaintext exceeds size limit")
 	}
 
