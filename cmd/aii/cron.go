@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ericmason/aii/internal/cloudsync"
 	"github.com/ericmason/aii/internal/store"
 )
 
@@ -50,6 +51,16 @@ func exePath() (string, error) {
 // behavior stays consistent.
 func runIndexCommand() error {
 	return cmdIndex(context.Background(), []string{"--quiet"})
+}
+
+// runSyncCommand runs `aii sync --quiet` after a scheduled index. An
+// install with --sync on a machine where sync was never configured
+// stays silent rather than spamming the cron log every interval.
+func runSyncCommand() error {
+	if _, err := cloudsync.LoadConfig(dataDir()); errors.Is(err, cloudsync.ErrNotConfigured) {
+		return nil
+	}
+	return cmdSync(context.Background(), []string{"--quiet"})
 }
 
 func parseInterval(s string) (int, error) {
@@ -103,8 +114,17 @@ func cmdCron(args []string) error {
 	case "run":
 		// Manual trigger of the same code path the scheduler runs —
 		// handy for testing the install without waiting for the
-		// interval to elapse.
-		return runIndexCommand()
+		// interval to elapse. `--sync` is what an install with
+		// `cron install --sync` schedules.
+		if err := runIndexCommand(); err != nil {
+			return err
+		}
+		for _, a := range rest {
+			if a == "--sync" || a == "-sync" {
+				return runSyncCommand()
+			}
+		}
+		return nil
 	case "help", "-h", "--help":
 		return cronUsage()
 	}
@@ -115,10 +135,10 @@ func cronUsage() error {
 	fmt.Print(`aii cron — schedule background indexing
 
 Usage:
-  aii cron install   [--every 5m]
+  aii cron install   [--every 5m] [--sync]   # --sync also runs 'aii sync' after each index
   aii cron uninstall
   aii cron status
-  aii cron run        # one-off manual run (same as 'aii index --quiet')
+  aii cron run [--sync]  # one-off manual run (index, then sync with --sync)
 
 Per-platform mechanism:
   macOS    LaunchAgent at ~/Library/LaunchAgents/com.aii.index.plist
@@ -131,6 +151,7 @@ Per-platform mechanism:
 func cronInstall(args []string) error {
 	fs := flag.NewFlagSet("cron install", flag.ExitOnError)
 	every := fs.String("every", "5m", "interval — supports 30s, 5m, 1h, 1d (rounded down to seconds)")
+	withSync := fs.Bool("sync", false, "also run `aii sync --quiet` after each index (requires `aii sync init`)")
 	fs.Parse(args)
 
 	intervalSeconds, err := parseInterval(*every)
@@ -141,13 +162,19 @@ func cronInstall(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Index-then-sync as ONE binary invocation (`cron run --sync`), so
+	// no platform needs shell command chaining.
+	schedArgs := []string{"index", "--quiet"}
+	if *withSync {
+		schedArgs = []string{"cron", "run", "--sync"}
+	}
 	switch runtime.GOOS {
 	case "darwin":
-		return installLaunchd(exe, intervalSeconds)
+		return installLaunchd(exe, intervalSeconds, schedArgs)
 	case "windows":
-		return installSchtasks(exe, intervalSeconds)
+		return installSchtasks(exe, intervalSeconds, schedArgs)
 	default:
-		return installCrontab(exe, intervalSeconds)
+		return installCrontab(exe, intervalSeconds, schedArgs)
 	}
 }
 
@@ -218,12 +245,12 @@ func launchdPlistPath() string {
 	return filepath.Join(home, "Library", "LaunchAgents", launchdLabel+".plist")
 }
 
-func installLaunchd(exe string, intervalSeconds int) error {
+func installLaunchd(exe string, intervalSeconds int, schedArgs []string) error {
 	path := launchdPlistPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	plist := buildLaunchdPlist(exe, intervalSeconds)
+	plist := buildLaunchdPlist(exe, intervalSeconds, schedArgs)
 	if err := os.WriteFile(path, []byte(plist), 0o644); err != nil {
 		return err
 	}
@@ -277,11 +304,15 @@ func statusLaunchd() error {
 	return nil
 }
 
-// buildLaunchdPlist composes a minimal LaunchAgent that runs
-// `aii index --quiet` every intervalSeconds. Output goes to a log file
-// next to the DB so you can `tail -f` it if something looks off.
-func buildLaunchdPlist(exe string, intervalSeconds int) string {
+// buildLaunchdPlist composes a minimal LaunchAgent that runs the
+// scheduled aii command every intervalSeconds. Output goes to a log
+// file next to the DB so you can `tail -f` it if something looks off.
+func buildLaunchdPlist(exe string, intervalSeconds int, schedArgs []string) string {
 	logPath := filepath.Join(dataDir(), "cron.log")
+	var argXML strings.Builder
+	for _, a := range append([]string{exe}, schedArgs...) {
+		fmt.Fprintf(&argXML, "    <string>%s</string>\n", a)
+	}
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -290,10 +321,7 @@ func buildLaunchdPlist(exe string, intervalSeconds int) string {
   <string>%s</string>
   <key>ProgramArguments</key>
   <array>
-    <string>%s</string>
-    <string>index</string>
-    <string>--quiet</string>
-  </array>
+%s  </array>
   <key>StartInterval</key>
   <integer>%d</integer>
   <key>RunAtLoad</key>
@@ -304,7 +332,7 @@ func buildLaunchdPlist(exe string, intervalSeconds int) string {
   <string>%s</string>
 </dict>
 </plist>
-`, launchdLabel, exe, intervalSeconds, logPath, logPath)
+`, launchdLabel, argXML.String(), intervalSeconds, logPath, logPath)
 }
 
 // --- schtasks (Windows) ------------------------------------------------
@@ -313,7 +341,7 @@ func buildLaunchdPlist(exe string, intervalSeconds int) string {
 // `aii index --quiet` every N minutes. schtasks /SC MINUTE caps /MO at
 // 1439 (<24h); longer intervals are clamped and warned about so the
 // install never silently lies about cadence.
-func installSchtasks(exe string, intervalSeconds int) error {
+func installSchtasks(exe string, intervalSeconds int, schedArgs []string) error {
 	mins := intervalSeconds / 60
 	if mins < 1 {
 		fmt.Fprintln(os.Stderr, "warning: schtasks can't go sub-minute; rounding to 1m")
@@ -325,7 +353,7 @@ func installSchtasks(exe string, intervalSeconds int) error {
 	}
 	// /TR takes a single command string. Quote the exe so paths with
 	// spaces (e.g. "C:\Program Files\aii\aii.exe") parse correctly.
-	action := fmt.Sprintf(`"%s" index --quiet`, exe)
+	action := fmt.Sprintf(`"%s" %s`, exe, strings.Join(schedArgs, " "))
 	out, err := exec.Command("schtasks",
 		"/Create", "/F",
 		"/SC", "MINUTE",
@@ -372,13 +400,13 @@ func statusSchtasks() error {
 
 // --- crontab (non-darwin, non-windows) ---------------------------------
 
-func installCrontab(exe string, intervalSeconds int) error {
+func installCrontab(exe string, intervalSeconds int, schedArgs []string) error {
 	cur, err := readCrontab()
 	if err != nil {
 		return err
 	}
 	cleaned := stripAiiCronLines(cur)
-	line, err := cronLine(exe, intervalSeconds)
+	line, err := cronLine(exe, intervalSeconds, schedArgs)
 	if err != nil {
 		return err
 	}
@@ -460,7 +488,7 @@ func stripAiiCronLines(s string) string {
 // cronLine produces a 5-field crontab spec (m h dom mon dow) that runs
 // the indexer at the requested interval. Sub-minute intervals can't be
 // expressed in classic cron, so we round up to 1 minute and warn.
-func cronLine(exe string, intervalSeconds int) (string, error) {
+func cronLine(exe string, intervalSeconds int, schedArgs []string) (string, error) {
 	mins := intervalSeconds / 60
 	if mins < 1 {
 		fmt.Fprintln(os.Stderr, "warning: cron can't go sub-minute; rounding to */1 * * * *")
@@ -468,17 +496,17 @@ func cronLine(exe string, intervalSeconds int) (string, error) {
 	}
 	logPath := filepath.Join(dataDir(), "cron.log")
 	if mins == 1 {
-		return fmt.Sprintf("* * * * * %s index --quiet >> %s 2>&1", exe, logPath), nil
+		return fmt.Sprintf("* * * * * %s %s >> %s 2>&1", exe, strings.Join(schedArgs, " "), logPath), nil
 	}
 	if 60%mins == 0 {
-		return fmt.Sprintf("*/%d * * * * %s index --quiet >> %s 2>&1", mins, exe, logPath), nil
+		return fmt.Sprintf("*/%d * * * * %s %s >> %s 2>&1", mins, exe, strings.Join(schedArgs, " "), logPath), nil
 	}
 	// Non-divisor of 60 (e.g. 7m): use closest divisor that doesn't lie
 	// about cadence. Cron's */N skips the 60-min boundary, which is fine
 	// for "occasional indexing" — pick the nearest divisor.
 	chosen := nearestDivisor(60, mins)
 	fmt.Fprintf(os.Stderr, "warning: %dm doesn't divide 60 — using */%d for an even cadence\n", mins, chosen)
-	return fmt.Sprintf("*/%d * * * * %s index --quiet >> %s 2>&1", chosen, exe, logPath), nil
+	return fmt.Sprintf("*/%d * * * * %s %s >> %s 2>&1", chosen, exe, strings.Join(schedArgs, " "), logPath), nil
 }
 
 func nearestDivisor(n, target int) int {

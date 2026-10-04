@@ -76,8 +76,8 @@ func TestAcquireIndexLock_ReapsStale(t *testing.T) {
 	t.Cleanup(release)
 
 	// The lock now records OUR pid.
-	if readLockPID() != os.Getpid() {
-		t.Errorf("lock PID = %d, want %d", readLockPID(), os.Getpid())
+	if readLockPIDAt(lockPath()) != os.Getpid() {
+		t.Errorf("lock PID = %d, want %d", readLockPIDAt(lockPath()), os.Getpid())
 	}
 }
 

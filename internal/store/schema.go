@@ -68,6 +68,25 @@ CREATE TABLE IF NOT EXISTS index_state (
     fingerprint TEXT
 );
 
+-- Cloud-sync bookkeeping. Keyed by the portable natural key — not the
+-- local rowid — so epoch/chain memory survives DeleteBySourcePath: a
+-- truncated-and-reindexed session recomputes a mismatched chain
+-- against its cached prefix and correctly bumps its epoch.
+CREATE TABLE IF NOT EXISTS sync_state (
+    agent       TEXT NOT NULL,
+    session_uid TEXT NOT NULL,
+    epoch       INTEGER NOT NULL DEFAULT 1,
+    chain_count INTEGER NOT NULL DEFAULT 0,
+    chain_hash  BLOB    NOT NULL DEFAULT x'',
+    excluded    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (agent, session_uid)
+);
+
+CREATE TABLE IF NOT EXISTS sync_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_agent     ON sessions(agent);
 CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace);
 CREATE INDEX IF NOT EXISTS idx_sessions_started   ON sessions(started_at);

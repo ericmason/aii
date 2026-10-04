@@ -12,9 +12,11 @@ Three things keep it useful:
 
 - **One static binary.** Pure-Go SQLite (`modernc.org/sqlite`). No cgo,
   no extensions to load, no Python sidecar.
-- **Zero network.** Nothing leaves your machine. `aii ask` optionally
-  shells out to a local LLM CLI (`claude`, `codex`, `ollama`), but only
-  when you ask it to.
+- **Local-first.** Nothing leaves your machine unless you opt in.
+  `aii ask` can shell out to a local LLM CLI (`claude`, `codex`,
+  `ollama`), and `aii sync` can replicate your index — end-to-end
+  encrypted — to storage *you* control, but both are off until you
+  turn them on. Indexing, search, and MCP work fully offline.
 - **Agent-native.** A stdio MCP server, stable cite tokens, ndjson
   output on pipes, token budgets, and sliced reads — so an agent can
   drive it without regex-parsing pretty tables.
@@ -397,6 +399,70 @@ Claude Code auto-loads skills on startup and will trigger this one
 whenever the user says "remember when…", "last time…", "how did I
 fix…", etc. Pairs with either the MCP server or the CLI.
 
+## Sync across machines (end-to-end encrypted)
+
+`aii sync` replicates your indexed sessions between machines through
+storage you already have — an S3-compatible bucket (AWS, Cloudflare R2,
+Backblaze B2, MinIO) or any synced folder (Dropbox, iCloud Drive,
+Syncthing, an NFS mount). There is no aii server and no account:
+everything is encrypted and authenticated on your machine before
+upload, with a key derived from a passphrase only you know.
+
+```sh
+# First machine — creates the encrypted repo
+aii sync init --remote s3://my-bucket/aii        # or: --remote ~/Dropbox/aii-sync
+aii sync                                          # pull + push
+
+# Every other machine — same command, same passphrase
+aii sync init --remote s3://my-bucket/aii
+aii sync
+
+# Keep it fresh automatically (runs sync after each background index)
+aii cron install --sync
+```
+
+S3 credentials come from `AII_SYNC_S3_ACCESS_KEY_ID` /
+`AII_SYNC_S3_SECRET_ACCESS_KEY`, the standard `AWS_*` variables, or
+flags at init (stored 0600). Non-AWS endpoints work via
+`--endpoint https://... --region auto`.
+
+**What the storage provider can see:** object sizes, upload timing, and
+pseudonymous object names (HMAC of session ids). **What it cannot see:**
+any message content, titles, workspaces, or session identifiers. Every
+object is age-encrypted and HMAC-authenticated; a tampered, replayed, or
+foreign object is rejected before decryption. Note that anyone with
+*read* access to your bucket can try passphrases offline — pick a long
+one (a diceware phrase, not a word).
+
+Details worth knowing:
+
+- **Conflict-safe by construction.** Sessions sync as immutable,
+  versioned bundles; two machines pushing concurrently can't clobber
+  each other. Divergent histories (e.g. a rotated transcript) supersede
+  by epoch — they are never interleaved, and cite tokens stay stable
+  across machines.
+- **Redaction still applies.** Content is scrubbed at index time, and
+  re-scrubbed on pull, so a `--no-redact` machine can't seed secrets
+  into the others.
+- **Deleting something everywhere:** `aii sync purge <session>` removes
+  a session from the remote and stops all future pushes; each machine
+  additionally runs `purge --local` to drop its own copy. Plain local
+  deletion would be re-pulled — purge is the supported path.
+- **Recovery:** the passphrase (plus the wrapped key object in your
+  bucket) is the only way to join new machines. Lose the passphrase and
+  every machine's key file, and the remote data is unrecoverable.
+- **First pull is slow on big corpora.** Joining a machine to a large
+  repo rebuilds the local FTS index message-by-message, which is
+  CPU-bound and takes about as long as the first `aii index` did
+  (~50 min for ~300k messages on an M-series Mac; progress is
+  reported). Every sync after that is incremental and takes seconds.
+  The indexer is never blocked: the index lock is only held in short
+  bursts between network fetches.
+- **v1 limitations:** no key rotation (re-init under a new prefix to
+  rotate), no automatic deletion propagation beyond purge, and
+  `--workspace` filters won't match sessions whose workspace path came
+  from another machine.
+
 ## Configuration
 
 Environment variables:
@@ -408,6 +474,8 @@ Environment variables:
 | `AII_ASK_CMD`   | Default command for `aii ask` (e.g. `ollama run llama3`).|
 | `NO_COLOR`      | Disable ANSI color in pretty output.                     |
 | `FORCE_COLOR`   | Force ANSI color even when piped.                        |
+| `AII_SYNC_PASSPHRASE` | Sync passphrase for non-interactive `sync init`.   |
+| `AII_SYNC_S3_ACCESS_KEY_ID` / `AII_SYNC_S3_SECRET_ACCESS_KEY` | S3 credentials for `aii sync` (fall back to `AWS_*`, then the sync config file). |
 
 ## Architecture
 

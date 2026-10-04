@@ -9,6 +9,26 @@ called out under **Changed** when they happen.
 ## [Unreleased]
 
 ### Added
+- **End-to-end encrypted cloud sync** (`aii sync`) — replicate your
+  indexed sessions across machines through storage you control: an
+  S3-compatible bucket (AWS, Cloudflare R2, Backblaze B2, MinIO — no
+  AWS SDK, SigV4 on the stdlib) or any synced folder (Dropbox, iCloud
+  Drive, Syncthing, NFS). Everything is encrypted (age) and
+  authenticated (HMAC, verified before decryption) on your machine; the
+  provider sees only sizes, timing, and pseudonymous names. One
+  passphrase joins new machines (`aii sync init --remote …`); syncs run
+  unattended after that. Sessions travel as immutable versioned
+  bundles with hash-chain prefix checking, so concurrent pushes can't
+  clobber each other, divergent histories supersede rather than
+  interleave, and cite tokens stay stable across machines. Includes
+  `aii sync status [--json]`, `push`/`pull [--dry-run]`, and
+  `aii sync purge <session> [--local]` to delete a session from the
+  remote and stop future pushes. Pulled content re-passes redaction, so
+  a `--no-redact` machine can't seed secrets into the others.
+- `aii cron install --sync` — run `aii sync --quiet` after each
+  scheduled background index, on all three platform schedulers.
+- `aii doctor` now reports sync configuration and last-sync freshness.
+
 - One-line install script for macOS and Linux — no Go toolchain
   required: `curl -fsSL
   https://raw.githubusercontent.com/ericmason/aii/main/scripts/install.sh
@@ -18,6 +38,9 @@ called out under **Changed** when they happen.
   `AII_INSTALL_DIR` or pin a version with `AII_VERSION`.
 
 ### Changed
+- The README's "zero network" promise is now "local-first": indexing,
+  search, and MCP still work fully offline and nothing leaves your
+  machine unless you explicitly enable `aii sync` (or `aii ask`).
 - README install instructions now lead with the one-line installer and
   manual prebuilt-binary download (with a per-platform asset table);
   `go install` / `go build` are now documented as the "from source"

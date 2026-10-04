@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"runtime"
 
+	"github.com/ericmason/aii/internal/cloudsync"
 	"github.com/ericmason/aii/internal/indexer"
 	"github.com/ericmason/aii/internal/mcpserver"
 	"github.com/ericmason/aii/internal/source"
@@ -57,6 +58,8 @@ Usage:
   aii tui
   aii doctor
   aii cron    install|uninstall|status|run  # schedule background indexing
+  aii sync    [init|status|push|pull|purge] # E2E-encrypted sync via your own
+                                            # storage (S3 or a synced folder)
   aii version                                # print version and exit
 
 The database lives at $AII_DB or ~/.local/share/aii/aii.db.
@@ -106,6 +109,8 @@ func main() {
 		err = cmdMCP(ctx, args)
 	case "cron":
 		err = cmdCron(args)
+	case "sync":
+		err = cmdSync(ctx, args)
 	case "version":
 		fmt.Println(aiiVersion)
 	case "help", "-h", "--help":
@@ -1321,7 +1326,8 @@ func cmdHelpJSON() error {
 		Roles:           []string{"user", "assistant", "thinking", "tool"},
 		SinceFormats:    []string{"7d", "24h", "30m", "1w", "2026-01-01", "RFC3339"},
 		OutputModes:     []string{"pretty", "json", "ndjson"},
-		Env:             []string{"AII_DB", "AII_AGENT", "AII_ASK_CMD", "NO_COLOR", "FORCE_COLOR"},
+		Env: []string{"AII_DB", "AII_AGENT", "AII_ASK_CMD", "NO_COLOR", "FORCE_COLOR",
+			"AII_SYNC_PASSPHRASE", "AII_SYNC_S3_ACCESS_KEY_ID", "AII_SYNC_S3_SECRET_ACCESS_KEY"},
 		Commands: []cmdInfo{
 			{"index", "Scan agent directories and update the FTS index", "aii index [--source all|cc|codex|cursor] [--full] [--verbose] [--no-redact] [--redact-sources]", []flagInfo{
 				{"--no-redact", "", "disable the default pass that scrubs API keys, tokens, and PEM blocks from indexed content"},
@@ -1359,6 +1365,17 @@ func cmdHelpJSON() error {
 			{"ui", "Serve + open browser (alias: web)", "aii ui [--addr 127.0.0.1:8723]", nil},
 			{"tui", "Two-pane bubbletea search UI", "aii tui", nil},
 			{"mcp", "Run as an MCP server over stdio — callable as a tool from coding agents", "aii mcp", nil},
+			{"sync", "End-to-end encrypted sync of indexed sessions across machines, via S3-compatible storage or a synced folder you control", "aii sync [init --remote <s3://bucket[/prefix]|/abs/dir> | status [--json] | push | pull | purge <ref>]", []flagInfo{
+				{"--remote", "", "init: s3://bucket[/prefix] or an absolute directory path (Dropbox/Syncthing/NFS)"},
+				{"--endpoint", "", "init: S3 endpoint override for R2/B2/MinIO"},
+				{"--region", "us-east-1", "init: S3 region ('auto' for R2)"},
+				{"--path-style", "", "init: force path-style S3 addressing (default when --endpoint is set)"},
+				{"--rebind", "", "init: re-pin the repo id / key fingerprint after an intentional repo change"},
+				{"--dry-run", "", "push/pull: show what would transfer without changing anything"},
+				{"--recheck", "", "push: recompute every session's chain instead of trusting cached state"},
+				{"--local", "", "purge: also delete the session from this machine's index"},
+				{"--yes", "", "purge: skip the confirmation prompt"},
+			}},
 			{"version", "Print the aii version and exit", "aii version", nil},
 		},
 	}
@@ -1513,6 +1530,21 @@ func cmdDoctor() error {
 	} else {
 		fmt.Println("  cron: not installed — run `aii cron install` for automatic updates")
 	}
+
+	fmt.Println("Sync:")
+	if cfg, err := cloudsync.LoadConfig(dataDir()); err == nil {
+		fmt.Printf("  remote: %s\n", cfg.Describe())
+		fmt.Printf("  repo:   %s\n", cfg.RepoID)
+		if info, err := os.Stat(syncStampPath()); err == nil {
+			fmt.Printf("  last synced %s ago\n", humanDuration(time.Since(info.ModTime())))
+		} else {
+			fmt.Println("  never synced — run `aii sync`")
+		}
+	} else if errors.Is(err, cloudsync.ErrNotConfigured) {
+		fmt.Println("  not configured — run `aii sync init` to sync across machines")
+	} else {
+		fmt.Printf("  config error: %v\n", err)
+	}
 	return nil
 }
 
@@ -1615,7 +1647,12 @@ func reorderFlags(in []string) []string {
 		"--no-redact": true, "-no-redact": true, "--redact-sources": true, "-redact-sources": true,
 		"--quiet": true, "-quiet": true,
 		"--ended-mid-task": true, "-ended-mid-task": true,
-		"--include-active": true, "-include-active": true}
+		"--include-active": true, "-include-active": true,
+		"--path-style": true, "-path-style": true,
+		"--rebind": true, "-rebind": true,
+		"--recheck": true, "-recheck": true,
+		"--local": true, "-local": true,
+		"--yes": true, "-yes": true}
 	var flags, rest []string
 	for i := 0; i < len(in); i++ {
 		a := in[i]
