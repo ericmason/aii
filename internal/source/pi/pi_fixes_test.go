@@ -95,3 +95,36 @@ func TestShortIDsDistinct(t *testing.T) {
 		t.Fatalf("timestamp prefix resolved to %s; the short id should be the random part", s.UID)
 	}
 }
+
+// A last line without a newline is never consumed, even when it parses:
+// pi may still be writing it.
+func TestUnterminatedLastLineNotConsumed(t *testing.T) {
+	in := piUser + strings.TrimSuffix(piAsst, "\n")
+	_, msgs, off, _ := parseDelta(context.Background(), strings.NewReader(in), 0, int64(len(in)))
+	if off != int64(len(piUser)) || len(msgs) != 1 {
+		t.Fatalf("offset = %d (want %d), msgs = %d (want 1)", off, len(piUser), len(msgs))
+	}
+}
+
+// Bytes appended after the file was stat'd are left for the next run, so
+// the offset and the emitted rows stay in step.
+func TestReadBoundedToStatSize(t *testing.T) {
+	in := piUser + piAsst
+	_, msgs, off, _ := parseDelta(context.Background(), strings.NewReader(in), 0, int64(len(piUser)))
+	if off != int64(len(piUser)) || len(msgs) != 1 {
+		t.Fatalf("offset = %d (want %d), msgs = %d (want 1)", off, len(piUser), len(msgs))
+	}
+
+	// End to end: the next run picks up the rest exactly once.
+	root, path := setup(t)
+	db := openDB(t)
+	src := &Source{Root: root}
+	writeFile(t, path, piHeader+piUser+strings.TrimSuffix(piAsst, "\n"), 1)
+	runIndex(t, db, src, false)
+	writeFile(t, path, piHeader+piUser+piAsst, 2)
+	runIndex(t, db, src, false)
+	runIndex(t, db, src, false)
+	if _, rows := messages(t, db, uid); len(rows) != 4 {
+		t.Fatalf("rows = %d, want 4", len(rows))
+	}
+}

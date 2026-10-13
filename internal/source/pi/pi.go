@@ -311,6 +311,12 @@ func parseDeltaMax(ctx context.Context, r io.Reader, startOffset, size int64, ma
 	var sess store.Session
 	var msgs []store.Message
 
+	// Read only up to the size stat'd before the read. Bytes pi appends
+	// meanwhile belong to the next run, which resumes from the offset
+	// returned here, so nothing is emitted twice.
+	if size >= startOffset {
+		r = io.LimitReader(r, size-startOffset)
+	}
 	br := bufio.NewReaderSize(r, scannerInitial)
 	offset := startOffset
 	for ctx.Err() == nil {
@@ -320,14 +326,13 @@ func parseDeltaMax(ctx context.Context, r io.Reader, startOffset, size int64, ma
 			log.Printf("pi: read error at offset %d: %v", lineStart, err)
 			break
 		}
-		if n == 0 {
+		if n == 0 || !complete {
+			// pi writes every entry with a trailing newline, so a last
+			// line without one is still being written, whatever its size.
+			// Leave it for the next run.
 			break
 		}
 		if tooLong {
-			if !complete {
-				// pi is still writing this line; try again next run.
-				break
-			}
 			log.Printf("pi: skipping %d-byte line at offset %d (over %d bytes)", n, lineStart, maxLine)
 			offset += n
 			continue
@@ -336,18 +341,10 @@ func parseDeltaMax(ctx context.Context, r io.Reader, startOffset, size int64, ma
 		trimmed := strings.TrimSpace(string(line))
 		if trimmed == "" {
 			offset += n
-			if !complete {
-				break
-			}
 			continue
 		}
 		var e entry
 		if err := json.Unmarshal([]byte(trimmed), &e); err != nil {
-			if !complete {
-				// The last line has no newline and doesn't parse: pi is
-				// mid-write, so leave it for the next run.
-				break
-			}
 			log.Printf("pi: bad json at offset %d: %v", lineStart, err)
 			offset += n
 			continue
@@ -375,9 +372,6 @@ func parseDeltaMax(ctx context.Context, r io.Reader, startOffset, size int64, ma
 		}
 		// session, model_change, thinking_level_change, usage, label,
 		// custom, custom_message, context_edit, branch_summary: skipped.
-		if !complete {
-			break
-		}
 	}
 
 	var fallback string
