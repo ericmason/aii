@@ -112,7 +112,15 @@ func apiSearch(db *store.DB, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, results)
+	type hit struct {
+		store.Result
+		CiteUID string `json:"cite_uid"`
+	}
+	out := make([]hit, 0, len(results))
+	for _, r := range results {
+		out = append(out, hit{Result: r, CiteUID: db.CiteUID(r.SessionUID)})
+	}
+	writeJSON(w, out)
 }
 
 func apiSession(db *store.DB, w http.ResponseWriter, r *http.Request) {
@@ -122,6 +130,11 @@ func apiSession(db *store.DB, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s, err := db.SessionByUIDAny(uid)
+	var amb *store.AmbiguousUIDError
+	if errors.As(err, &amb) {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -216,6 +229,7 @@ func apiSessions(db *store.DB, w http.ResponseWriter, r *http.Request) {
 
 	type item struct {
 		UID          string `json:"uid"`
+		CiteUID      string `json:"cite_uid"`
 		Agent        string `json:"agent"`
 		Title        string `json:"title"`
 		Summary      string `json:"summary,omitempty"`
@@ -230,7 +244,7 @@ func apiSessions(db *store.DB, w http.ResponseWriter, r *http.Request) {
 	}{Total: total, Items: make([]item, 0, len(items))}
 	for _, s := range items {
 		out.Items = append(out.Items, item{
-			UID: s.UID, Agent: s.Agent, Title: s.Title, Summary: s.Summary,
+			UID: s.UID, CiteUID: db.CiteUID(s.UID), Agent: s.Agent, Title: s.Title, Summary: s.Summary,
 			Workspace: s.Workspace, StartedAt: s.StartedAt, EndedAt: s.EndedAt,
 			MessageCount: s.MessageCount,
 		})

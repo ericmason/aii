@@ -70,10 +70,10 @@ state across lines.
 ```
 
 - `agent_code` ∈ {`cc`, `cdx`, `cur`, `pi`, `oc`, `gem`, `cop`} (Claude Code, Codex, Cursor, pi, opencode, Gemini CLI, Copilot Chat)
-- `short_uid` = first 8 chars of the session UUID (for opencode, of the session id without its `ses_` prefix; for pi, of the id's last group, because pi's UUIDv7 ids start with a timestamp)
+- `short_uid` = shortest unique prefix, at least 8 chars, of the stored session uid (`store.CiteUID`). For opencode the stored uid drops the `ses_` prefix; for pi it starts with the id's last group, because pi's UUIDv7 ids start with a timestamp.
 - `ordinal` = 0-indexed position within the session
 
-Regex: `^(cc|cdx|cur|pi|oc|gem|cop)/[0-9a-f]{8}:\d+$`
+Regex: `^(cc|cdx|cur|pi|oc|gem|cop)/[0-9a-f-]{8,}:\d+$`
 
 **When you cite a claim to the user, use this token.** It's
 copy-pasteable, unambiguous, and round-trips to `get_session` /

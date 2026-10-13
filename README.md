@@ -188,7 +188,7 @@ aii show <uid>|--last [--format md|plain|ndjson]
                       [--role ...] [--max-msg-chars N] [--max-bytes N]
 ```
 
-Accepts a full uid or the 8-char prefix. Slicing options:
+Accepts a full uid or any prefix that matches one session. Slicing options:
 - `--around 42 --span 3` — ±3 messages around ordinal 42.
 - `--from 40 --to 60` — inclusive ordinal range.
 - Neither — full session.
@@ -309,7 +309,7 @@ token** in the format:
 ```
 
 - `agent_code` — `cc` (Claude Code), `cdx` (Codex), `cur` (Cursor), `pi` (pi), `oc` (opencode), `gem` (Gemini CLI), `cop` (Copilot Chat).
-- `short_uid` — first 8 chars of the session UUID. For opencode, the `ses_` prefix of the session id is dropped first. For pi, whose session ids start with a timestamp, it is the first 8 characters of the id's last group, so sessions started in the same minute get different short ids; `aii show` also accepts the full session id pi prints.
+- `short_uid` — the shortest prefix of the session id, at least 8 chars, that no other indexed session shares. Most are 8 chars; Codex ids started within the same minute get a longer one. A prefix that matches more than one session is an error that lists the matches, never a guess. For opencode, the `ses_` prefix of the session id is dropped first. For pi, whose session ids start with a timestamp, the id starts at its last group, so sessions started in the same minute get different short ids; `aii show` also accepts the full session id pi prints.
 - `ordinal` — 0-indexed position of the message within the session.
 
 Example: `cc/32e869ac:319`. You can hand this token back to `aii show`
@@ -317,7 +317,7 @@ or the MCP `get_session` tool as the session ref — the ordinal will be
 used as the anchor if you don't pass one explicitly. Regex:
 
 ```
-^(cc|cdx|cur|pi|oc|gem|cop)/[0-9a-f]{8}:\d+$
+^(cc|cdx|cur|pi|oc|gem|cop)/[0-9a-f-]{8,}:\d+$
 ```
 
 ### Token budgets

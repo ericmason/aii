@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS index_state (
 CREATE INDEX IF NOT EXISTS idx_sessions_agent     ON sessions(agent);
 CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace);
 CREATE INDEX IF NOT EXISTS idx_sessions_started   ON sessions(started_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_uid       ON sessions(session_uid);
 CREATE INDEX IF NOT EXISTS idx_messages_session   ON messages(session_id, ordinal);
 `
 

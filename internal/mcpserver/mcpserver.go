@@ -41,6 +41,7 @@ func registerTools(s *server.MCPServer, db *store.DB) {
 					"sessions ranked by bm25 with up to 3 top excerpts each. "+
 					"Every excerpt carries a stable cite token of the form "+
 					"'<agent_code>/<short_uid>:<ordinal>' (e.g. cc/a1b2c3d4:42). "+
+					"short_uid is the shortest unique session-id prefix (8+ chars). "+
 					"Pass that cite (or just the short_uid) to get_session to "+
 					"pull the exact surrounding messages. Agent codes: "+
 					"cc=claude_code, cdx=codex, cur=cursor, pi=pi, oc=opencode, gem=gemini, cop=copilot."),
@@ -230,7 +231,7 @@ func makeSearchHandler(db *store.DB) server.ToolHandlerFunc {
 			rank := i + 1 + int(a.Offset)
 			for _, e := range r.Excerpts {
 				hits = append(hits, searchHit{
-					Cite:         fmt.Sprintf("%s/%s:%d", ShortAgent(r.Agent), ShortUID(r.SessionUID), e.Ordinal),
+					Cite:         fmt.Sprintf("%s/%s:%d", ShortAgent(r.Agent), ShortUID(db, r.SessionUID), e.Ordinal),
 					Agent:        r.Agent,
 					UID:          r.SessionUID,
 					Ordinal:      e.Ordinal,
@@ -351,7 +352,7 @@ func makeGetSessionHandler(db *store.DB) server.ToolHandlerFunc {
 				content = content[:maxMsgChars] + "…[truncated]"
 			}
 			out = append(out, sessionRow{
-				Cite:    fmt.Sprintf("%s/%s:%d", ShortAgent(sess.Agent), ShortUID(sess.UID), r.Ordinal),
+				Cite:    fmt.Sprintf("%s/%s:%d", ShortAgent(sess.Agent), ShortUID(db, sess.UID), r.Ordinal),
 				Ordinal: r.Ordinal,
 				Role:    r.Role,
 				TS:      r.TS,
@@ -370,13 +371,13 @@ func makeGetSessionHandler(db *store.DB) server.ToolHandlerFunc {
 			"count":    len(out),
 			"messages": out,
 		}
-		return mcp.NewToolResultStructured(payload, renderFallbackSession(sess, out)), nil
+		return mcp.NewToolResultStructured(payload, renderFallbackSession(db, sess, out)), nil
 	}
 }
 
-func renderFallbackSession(s *store.Session, rows []sessionRow) string {
+func renderFallbackSession(db *store.DB, s *store.Session, rows []sessionRow) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s/%s — %s (%d messages)\n", ShortAgent(s.Agent), ShortUID(s.UID), s.Title, len(rows))
+	fmt.Fprintf(&b, "%s/%s — %s (%d messages)\n", ShortAgent(s.Agent), ShortUID(db, s.UID), s.Title, len(rows))
 	for _, r := range rows {
 		fmt.Fprintf(&b, "- %s [%s] %s\n", r.Cite, r.Role, oneLine(r.Content))
 	}
@@ -452,7 +453,7 @@ func makeRelatedHandler(db *store.DB) server.ToolHandlerFunc {
 			rank := i + 1
 			for _, e := range r.Excerpts {
 				hits = append(hits, searchHit{
-					Cite:         fmt.Sprintf("%s/%s:%d", ShortAgent(r.Agent), ShortUID(r.SessionUID), e.Ordinal),
+					Cite:         fmt.Sprintf("%s/%s:%d", ShortAgent(r.Agent), ShortUID(db, r.SessionUID), e.Ordinal),
 					Agent:        r.Agent,
 					UID:          r.SessionUID,
 					Ordinal:      e.Ordinal,
@@ -476,7 +477,7 @@ func makeRelatedHandler(db *store.DB) server.ToolHandlerFunc {
 			"hits":       hits,
 		}
 		return mcp.NewToolResultStructured(payload,
-			fmt.Sprintf("related to %s (seed: %s) → %d sessions", ShortUID(src.UID), truncate(seed, 60), len(filtered))), nil
+			fmt.Sprintf("related to %s (seed: %s) → %d sessions", ShortUID(db, src.UID), truncate(seed, 60), len(filtered))), nil
 	}
 }
 
@@ -568,7 +569,7 @@ func makeListSessionsHandler(db *store.DB) server.ToolHandlerFunc {
 		out := make([]sessionItem, 0, len(items))
 		for _, s := range items {
 			out = append(out, sessionItem{
-				Cite:         fmt.Sprintf("%s/%s", ShortAgent(s.Agent), ShortUID(s.UID)),
+				Cite:         fmt.Sprintf("%s/%s", ShortAgent(s.Agent), ShortUID(db, s.UID)),
 				Agent:        s.Agent,
 				UID:          s.UID,
 				Title:        s.Title,

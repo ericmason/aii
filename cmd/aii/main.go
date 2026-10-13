@@ -271,6 +271,7 @@ func cmdSearch(args []string) error {
 		return err
 	}
 	defer db.Close()
+	citeDB = db
 
 	results, err := db.Search(store.Query{
 		Text:      q,
@@ -543,6 +544,7 @@ func cmdSessions(args []string) error {
 		return err
 	}
 	defer db.Close()
+	citeDB = db
 
 	items, err := db.ListSessions(store.SessionFilter{
 		Agent:        normalizeAgent(*agent),
@@ -697,6 +699,7 @@ func cmdAsk(ctx context.Context, args []string) error {
 		return err
 	}
 	defer db.Close()
+	citeDB = db
 
 	results, err := db.Search(store.Query{
 		Text:      question,
@@ -860,6 +863,7 @@ func cmdShow(args []string) error {
 		return err
 	}
 	defer db.Close()
+	citeDB = db
 
 	ws := resolveWorkspaceFlag(*workspace)
 	if ws != "" && !*last {
@@ -1188,6 +1192,7 @@ func cmdRelated(args []string) error {
 		return err
 	}
 	defer db.Close()
+	citeDB = db
 
 	uid, _ := parseSessionRef(fs.Arg(0))
 	src, err := pi.LookupSession(db, uid)
@@ -1330,7 +1335,7 @@ func cmdHelpJSON() error {
 		Binary:          "aii",
 		DBPath:          store.DefaultPath(),
 		CiteTokenFormat: "<agent_code>/<short_uid>:<ordinal>",
-		CiteTokenExpr:   `^(cc|cdx|cur|pi|oc|gem|cop)/[0-9a-f]{8}:\d+$`,
+		CiteTokenExpr:   `^(cc|cdx|cur|pi|oc|gem|cop)/[0-9a-f-]{8,}:\d+$`,
 		AgentCodes:      []string{"cc", "cdx", "cur", "pi", "oc", "gem", "cop"},
 		Roles:           []string{"user", "assistant", "thinking", "tool"},
 		SinceFormats:    []string{"7d", "24h", "30m", "1w", "2026-01-01", "RFC3339"},
@@ -1597,14 +1602,13 @@ func shortAgent(a string) string {
 	return a
 }
 
-func shortUID(uid string) string {
-	if len(uid) <= 8 {
-		return uid
-	}
-	return uid[:8]
-}
+// citeDB is the index the current command opened. shortUID uses it to
+// print the shortest unambiguous id prefix in cite tokens.
+var citeDB *store.DB
 
-// parseSessionRef accepts a bare uid (full or 8-char short) or a cite
+func shortUID(uid string) string { return citeDB.CiteUID(uid) }
+
+// parseSessionRef accepts a bare uid (full or any unique prefix) or a cite
 // token like "cc/abc12345:42" and returns (uid, ordinal). Ordinal is
 // -1 when the ref didn't carry one. The agent prefix is informational
 // only — SessionByUIDAny looks up by uid.

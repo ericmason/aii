@@ -352,25 +352,6 @@ func (d *DB) SessionByUID(agent, uid string) (*Session, error) {
 	return s, nil
 }
 
-// SessionByUIDAny finds a session by uid regardless of agent (for convenience).
-func (d *DB) SessionByUIDAny(uid string) (*Session, error) {
-	row := d.QueryRow(`SELECT id, agent, session_uid, COALESCE(workspace,''), COALESCE(title,''),
-                              COALESCE(summary,''),
-                              COALESCE(started_at,0), COALESCE(ended_at,0), source_path,
-                              source_mtime_ns, source_size
-                       FROM sessions WHERE session_uid = ? OR session_uid LIKE ? LIMIT 1`, uid, uid+"%")
-	s := &Session{}
-	if err := row.Scan(&s.ID, &s.Agent, &s.UID, &s.Workspace, &s.Title, &s.Summary,
-		&s.StartedAt, &s.EndedAt,
-		&s.SourcePath, &s.SourceMtimeNs, &s.SourceSize); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return s, nil
-}
-
 func (d *DB) LatestSession() (*Session, error) {
 	row := d.QueryRow(`SELECT id, agent, session_uid, COALESCE(workspace,''), COALESCE(title,''),
                               COALESCE(summary,''),

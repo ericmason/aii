@@ -106,7 +106,7 @@ function renderResults(hits) {
     const workspace = h.workspace ? `<div class="r-workspace">${esc(h.workspace)}</div>` : "";
     const firstOrd = (h.excerpts && h.excerpts[0] && h.excerpts[0].ordinal) || 0;
     const title = esc(h.title || h.session_uid);
-    const uid = esc(h.session_uid.slice(0, 8));
+    const uid = esc(h.cite_uid || h.session_uid.slice(0, 8));
     return `
       <article class="result" data-uid="${esc(h.session_uid)}" data-ordinal="${firstOrd}">
         <div class="rank">${i + 1}</div>
@@ -147,7 +147,7 @@ function renderSessions(items, total) {
     const summary = s.summary ? `<div class="r-summary">${esc(s.summary)}</div>` : "";
     const workspace = s.workspace ? `<div class="r-workspace">${esc(s.workspace)}</div>` : "";
     const title = esc(s.title || s.uid);
-    const uid = esc((s.uid || "").slice(0, 8));
+    const uid = esc(s.cite_uid || (s.uid || "").slice(0, 8));
     const msgs = `<span class="more">${s.message_count} msg${s.message_count === 1 ? "" : "s"}</span>`;
     return `
       <article class="result session-row" data-uid="${esc(s.uid)}">

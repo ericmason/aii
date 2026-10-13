@@ -47,9 +47,10 @@ Every excerpt and message carries a stable token:
 ```
 
 - `agent_code` ∈ {`cc` = Claude Code, `cdx` = Codex, `cur` = Cursor, `pi` = pi, `oc` = opencode, `gem` = Gemini CLI, `cop` = Copilot Chat}
-- `short_uid` = first 8 chars of the session UUID
+- `short_uid` = shortest prefix of the session id, at least 8 chars, that no other session shares; copy it whole
 - `ordinal` = 0-indexed position within the session
-- Regex: `^(cc|cdx|cur|pi|oc|gem|cop)/[0-9a-f]{8}:\d+$`
+- Regex: `^(cc|cdx|cur|pi|oc|gem|cop)/[0-9a-f-]{8,}:\d+$`
+- If `aii show` says an id is ambiguous, it lists the matching sessions; rerun with one of the listed ids.
 
 **When you cite a claim back to the user, use this token.** It's
 copy-pasteable and round-trips to `get_session` / `aii show`.

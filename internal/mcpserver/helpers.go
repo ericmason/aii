@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/ericmason/aii/internal/store"
 )
 
 // NormalizeAgent mirrors the CLI's agent alias table. Exposed (capital)
@@ -68,21 +70,16 @@ func ShortAgent(a string) string {
 	return a
 }
 
-// ShortUID is the 8-char prefix used in cite tokens. Stable across
-// calls: we never shuffle uid characters.
-func ShortUID(uid string) string {
-	if len(uid) <= 8 {
-		return uid
-	}
-	return uid[:8]
-}
+// ShortUID is the id prefix used in cite tokens: the shortest prefix,
+// at least 8 chars, that no other indexed session shares.
+func ShortUID(db *store.DB, uid string) string { return db.CiteUID(uid) }
 
-// parseSessionRef accepts either a bare uid (full or 8-char short) or
-// a cite token like "cc/abc12345:42". Returns (uid, ordinal) where
+// parseSessionRef accepts either a bare uid (full or any unique prefix)
+// or a cite token like "cc/abc12345:42". Returns (uid, ordinal) where
 // ordinal is -1 when the ref didn't carry one. The agent prefix is
-// informational only — SessionByUIDAny ignores it and looks up by uid
-// suffix match, so different agents with colliding uids are
-// disambiguated by the first hit (rare; uids are UUIDs).
+// informational only — SessionByUIDAny ignores it, looks up by uid
+// prefix, and returns an error listing the candidates when the prefix
+// matches more than one session.
 func parseSessionRef(ref string) (string, int) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
