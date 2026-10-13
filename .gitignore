@@ -24,5 +24,9 @@ coverage.*
 # Claude Code harness config — machine-local, not portable.
 .claude/
 
+# Roo CLI mock VS Code storage from scripts/agent-fixtures/roo-run.sh;
+# it can hold an API key.
+.vscode-mock/
+
 # Per-session handoff notes for the next agent — local only.
 HANDOFF.md

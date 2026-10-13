@@ -31,6 +31,11 @@ mkdir -p "$out"
 out=$(cd "$out" && pwd)
 image="aii-fixture-$tool"
 
+# The Roo CLI saves the API key in its mock VS Code secret storage under
+# the output directory. Delete it however the run ends.
+trap 'rm -f "$out/.vscode-mock/global-storage/secrets.json"' EXIT
+trap 'exit 1' HUP INT TERM
+
 docker build -q -t "$image" -f "$here/$tool.Dockerfile" "$here"
 docker run --rm "$@" \
 	-e MODEL="${MODEL:-openai/gpt-4.1-mini}" \
