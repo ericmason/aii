@@ -309,7 +309,7 @@ token** in the format:
 ```
 
 - `agent_code` — `cc` (Claude Code), `cdx` (Codex), `cur` (Cursor), `pi` (pi), `oc` (opencode), `gem` (Gemini CLI), `cop` (Copilot Chat).
-- `short_uid` — first 8 chars of the session UUID. For opencode, the `ses_` prefix of the session id is dropped first.
+- `short_uid` — first 8 chars of the session UUID. For opencode, the `ses_` prefix of the session id is dropped first. For pi, whose session ids start with a timestamp, it is the first 8 characters of the id's last group, so sessions started in the same minute get different short ids; `aii show` also accepts the full session id pi prints.
 - `ordinal` — 0-indexed position of the message within the session.
 
 Example: `cc/32e869ac:319`. You can hand this token back to `aii show`

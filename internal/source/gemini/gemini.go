@@ -26,11 +26,9 @@
 package gemini
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -45,11 +43,9 @@ import (
 const (
 	agentName = "gemini"
 
-	maxToolResult  = 4 * 1024
-	maxToolInput   = 1 * 1024
-	maxTitleRunes  = 200
-	scannerInitial = 1 << 20  // 1 MiB
-	scannerMax     = 64 << 20 // 64 MiB
+	maxToolResult = 4 * 1024
+	maxToolInput  = 1 * 1024
+	maxTitleRunes = 200
 )
 
 // Source implements source.Source for Gemini CLI.
@@ -157,6 +153,19 @@ func scanFile(ctx context.Context, db *store.DB, root, path string, full bool, o
 		// it until it changes.
 		out <- source.Batch{State: state, Truncate: truncate}
 		return nil
+	}
+
+	if !truncate {
+		// Gemini CLI rewrites an older .json session as .jsonl. If the
+		// session was indexed from another file, replace those rows
+		// instead of adding to them.
+		if existing, err := db.SessionByUID(agentName, conv.SessionID); err == nil && existing != nil && existing.SourcePath != abs {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case out <- source.Batch{State: store.IndexState{SourcePath: existing.SourcePath}, Truncate: true}:
+			}
+		}
 	}
 
 	msgs := conversationMessages(conv.Messages)
@@ -464,16 +473,20 @@ func (r *replay) line(b []byte) {
 // parseConversation replays a session file. It falls back to the older
 // single-document JSON format when the JSONL replay finds no session id.
 func parseConversation(data []byte) conversation {
+	// The file is already in memory, so every line is replayed whatever
+	// its length; a line-length cap would silently drop the records after
+	// a large tool output.
 	r := &replay{byID: map[string]*messageRecord{}}
-	sc := bufio.NewScanner(bytes.NewReader(data))
-	sc.Buffer(make([]byte, scannerInitial), scannerMax)
-	for sc.Scan() {
-		if line := bytes.TrimSpace(sc.Bytes()); len(line) > 0 {
+	for rest := data; len(rest) > 0; {
+		line := rest
+		if i := bytes.IndexByte(rest, '\n'); i >= 0 {
+			line, rest = rest[:i], rest[i+1:]
+		} else {
+			rest = nil
+		}
+		if line = bytes.TrimSpace(line); len(line) > 0 {
 			r.line(line)
 		}
-	}
-	if err := sc.Err(); err != nil && !errors.Is(err, bufio.ErrTooLong) {
-		log.Printf("gemini: scanner: %v", err)
 	}
 	if r.conv.SessionID != "" {
 		for _, id := range r.order {

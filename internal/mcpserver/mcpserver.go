@@ -17,6 +17,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/ericmason/aii/internal/source/pi"
 	"github.com/ericmason/aii/internal/store"
 )
 
@@ -303,7 +304,7 @@ func makeGetSessionHandler(db *store.DB) server.ToolHandlerFunc {
 		roleFilter, _ := raw["role"].(string)
 		maxMsgChars := intArg(raw, "max_msg_chars", 0)
 
-		sess, err := db.SessionByUIDAny(uid)
+		sess, err := pi.LookupSession(db, uid)
 		if err != nil {
 			return mcp.NewToolResultErrorFromErr("lookup failed", err), nil
 		}
@@ -401,7 +402,7 @@ func makeRelatedHandler(db *store.DB) server.ToolHandlerFunc {
 		if uid == "" {
 			return mcp.NewToolResultError("session is required"), nil
 		}
-		src, err := db.SessionByUIDAny(uid)
+		src, err := pi.LookupSession(db, uid)
 		if err != nil {
 			return mcp.NewToolResultErrorFromErr("lookup failed", err), nil
 		}

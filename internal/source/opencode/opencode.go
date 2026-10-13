@@ -176,7 +176,7 @@ func (s *Source) scanDB(ctx context.Context, db *store.DB, path string, full boo
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		sourcePath := "opencode:session:" + sr.ID
+		sourcePath := sessionSourcePath(path, sr.ID)
 		prev, err := db.GetState(sourcePath)
 		if err != nil {
 			return fmt.Errorf("get state: %w", err)
@@ -570,8 +570,7 @@ func toolResult(name, body string, isErr bool) string {
 // openRO opens an opencode database read-only. busy_timeout covers the
 // brief locks opencode takes while it checkpoints the WAL.
 func openRO(path string) (*sql.DB, error) {
-	u := url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro&_pragma=busy_timeout(5000)"}
-	db, err := sql.Open("sqlite", u.String())
+	db, err := sql.Open("sqlite", readOnlyURI(path))
 	if err != nil {
 		return nil, err
 	}
@@ -582,6 +581,30 @@ func openRO(path string) (*sql.DB, error) {
 		return nil, err
 	}
 	return db, nil
+}
+
+// sessionSourcePath is the per-session key for index state and the
+// session's source_path. It carries the database path, so sessions from
+// two databases (for example the stable and a dev channel) keep separate
+// state.
+func sessionSourcePath(dbPath, id string) string {
+	if abs, err := filepath.Abs(dbPath); err == nil {
+		dbPath = abs
+	}
+	return "opencode:" + dbPath + "#session:" + id
+}
+
+// readOnlyURI builds the SQLite URI that opens path read-only. A Windows
+// path such as C:\Users\me\opencode.db becomes file:///C:/Users/me/...;
+// without the slash conversion and the leading "/", SQLite reads the
+// drive as a URI authority and refuses to open the file.
+func readOnlyURI(path string) string {
+	p := filepath.ToSlash(path)
+	if len(p) >= 2 && p[1] == ':' && (p[0] >= 'A' && p[0] <= 'Z' || p[0] >= 'a' && p[0] <= 'z') {
+		p = "/" + strings.ReplaceAll(p, `\`, "/")
+	}
+	u := url.URL{Scheme: "file", Path: p, RawQuery: "mode=ro&_pragma=busy_timeout(5000)"}
+	return u.String()
 }
 
 // compactJSON re-serializes a RawMessage with no superfluous whitespace.

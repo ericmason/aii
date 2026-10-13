@@ -159,9 +159,19 @@ func (s *Source) scanFile(ctx context.Context, db *store.DB, path string, full b
 		return fmt.Errorf("seek: %w", err)
 	}
 
-	sess, msgs, newOffset := parseDelta(ctx, f, startOffset, size)
+	sess, msgs, newOffset, fallbackTitle := parseDelta(ctx, f, startOffset, size)
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	uid := SessionUID(hdr.ID)
+	if sess.Title == "" && fallbackTitle != "" {
+		// The first user message titles the session only when nothing
+		// earlier did: a delta's first message is a later turn.
+		if startOffset == 0 || truncate {
+			sess.Title = fallbackTitle
+		} else if existing, err := db.SessionByUID(agentName, uid); err == nil && (existing == nil || existing.Title == "") {
+			sess.Title = fallbackTitle
+		}
 	}
 
 	state := store.IndexState{SourcePath: abs, MtimeNs: mtimeNs, Size: size, LastOffset: newOffset}
@@ -173,7 +183,7 @@ func (s *Source) scanFile(ctx context.Context, db *store.DB, path string, full b
 
 	baseOrdinal := 0
 	if !truncate {
-		baseOrdinal, err = nextOrdinalForUID(db, hdr.ID)
+		baseOrdinal, err = nextOrdinalForUID(db, uid)
 		if err != nil {
 			return fmt.Errorf("base ordinal: %w", err)
 		}
@@ -183,7 +193,7 @@ func (s *Source) scanFile(ctx context.Context, db *store.DB, path string, full b
 	}
 
 	sess.Agent = agentName
-	sess.UID = hdr.ID
+	sess.UID = uid
 	sess.Workspace = hdr.CWD
 	sess.StartedAt = parseTS(hdr.Timestamp)
 	sess.SourcePath = abs
@@ -256,41 +266,93 @@ type contentBlock struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
+// readLine reads one newline-terminated line from br. It returns the
+// line without its newline, the number of bytes consumed (including the
+// newline), whether a newline ended it, and whether it exceeded max
+// bytes. An oversized line is consumed in full but its content is
+// dropped. err is non-nil only for read errors other than EOF.
+func readLine(br *bufio.Reader, max int) (line []byte, n int64, complete, tooLong bool, err error) {
+	for {
+		chunk, rerr := br.ReadSlice('\n')
+		n += int64(len(chunk))
+		if !tooLong {
+			if len(line)+len(chunk) > max+1 {
+				tooLong, line = true, nil
+			} else {
+				line = append(line, chunk...)
+			}
+		}
+		switch {
+		case rerr == nil:
+			if !tooLong {
+				line = line[:len(line)-1]
+			}
+			return line, n, true, tooLong, nil
+		case errors.Is(rerr, bufio.ErrBufferFull):
+			continue
+		case errors.Is(rerr, io.EOF):
+			return line, n, false, tooLong, nil
+		default:
+			return line, n, false, tooLong, rerr
+		}
+	}
+}
+
 // parseDelta reads entries from r (positioned at startOffset) through
-// EOF. It returns session metadata gathered from the delta, messages
-// with ordinals starting at 0, and the offset just past the last
-// complete line.
-func parseDelta(ctx context.Context, r io.Reader, startOffset, size int64) (store.Session, []store.Message, int64) {
+// EOF. It returns session metadata gathered from the delta (the title
+// only when a session_info entry sets one), messages with ordinals
+// starting at 0, the offset just past the last complete line, and the
+// first user message's text as a fallback title.
+func parseDelta(ctx context.Context, r io.Reader, startOffset, size int64) (store.Session, []store.Message, int64, string) {
+	return parseDeltaMax(ctx, r, startOffset, size, scannerMax)
+}
+
+func parseDeltaMax(ctx context.Context, r io.Reader, startOffset, size int64, maxLine int) (store.Session, []store.Message, int64, string) {
 	var sess store.Session
 	var msgs []store.Message
 
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, scannerInitial), scannerMax)
-
+	br := bufio.NewReaderSize(r, scannerInitial)
 	offset := startOffset
-	var lastStart int64
-	lastBad := false
-	for scanner.Scan() {
-		if ctx.Err() != nil {
+	for ctx.Err() == nil {
+		lineStart := offset
+		line, n, complete, tooLong, err := readLine(br, maxLine)
+		if err != nil {
+			log.Printf("pi: read error at offset %d: %v", lineStart, err)
 			break
 		}
-		lineStart := offset
-		line := scanner.Bytes()
-		offset += int64(len(line)) + 1
-		lastStart, lastBad = lineStart, false
+		if n == 0 {
+			break
+		}
+		if tooLong {
+			if !complete {
+				// pi is still writing this line; try again next run.
+				break
+			}
+			log.Printf("pi: skipping %d-byte line at offset %d (over %d bytes)", n, lineStart, maxLine)
+			offset += n
+			continue
+		}
 
 		trimmed := strings.TrimSpace(string(line))
 		if trimmed == "" {
+			offset += n
+			if !complete {
+				break
+			}
 			continue
 		}
 		var e entry
 		if err := json.Unmarshal([]byte(trimmed), &e); err != nil {
-			lastBad = true
-			if lineStart+int64(len(line)) < size {
-				log.Printf("pi: bad json at offset %d: %v", lineStart, err)
+			if !complete {
+				// The last line has no newline and doesn't parse: pi is
+				// mid-write, so leave it for the next run.
+				break
 			}
+			log.Printf("pi: bad json at offset %d: %v", lineStart, err)
+			offset += n
 			continue
 		}
+		offset += n
 		ts := parseTS(e.Timestamp)
 		switch e.Type {
 		case "message":
@@ -313,27 +375,17 @@ func parseDelta(ctx context.Context, r io.Reader, startOffset, size int64) (stor
 		}
 		// session, model_change, thinking_level_change, usage, label,
 		// custom, custom_message, context_edit, branch_summary: skipped.
-	}
-	if err := scanner.Err(); err != nil {
-		log.Printf("pi: scanner error at offset %d: %v", offset, err)
-	}
-	if offset > size {
-		// The last line had no trailing newline. If it also failed to
-		// parse, pi is mid-write: leave it for the next run.
-		if lastBad {
-			offset = lastStart
-		} else {
-			offset = size
+		if !complete {
+			break
 		}
 	}
 
+	var fallback string
 	if len(msgs) > 0 {
 		sess.EndedAt = msgs[len(msgs)-1].TS
-		if sess.Title == "" {
-			sess.Title = firstUserText(msgs)
-		}
+		fallback = firstUserText(msgs)
 	}
-	return sess, msgs, offset
+	return sess, msgs, offset, fallback
 }
 
 // messageToRows maps one AgentMessage to zero or more store rows.
@@ -520,4 +572,46 @@ func firstUserText(msgs []store.Message) string {
 		}
 	}
 	return ""
+}
+
+// SessionUID maps a pi session id to the uid aii stores. pi ids are
+// UUIDv7, whose first 8 hex digits are a timestamp prefix that only
+// changes about once a minute, so two sessions started close together
+// would share a short id. The stored uid moves the random last group to
+// the front ("rrrrrrrrrrrr-tttttttt-tttt-7xxx-yxxx") so its first 8
+// characters tell sessions apart. Ids that aren't UUIDv7 are kept as is.
+func SessionUID(id string) string {
+	if !isUUIDv7(id) {
+		return id
+	}
+	return id[24:] + "-" + id[:23]
+}
+
+func isUUIDv7(s string) bool {
+	if len(s) != 36 || s[8] != '-' || s[13] != '-' || s[18] != '-' || s[23] != '-' || s[14] != '7' {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			continue
+		}
+		c := s[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+// LookupSession resolves a session ref the way SessionByUIDAny does,
+// and also accepts a full pi session id as pi prints it.
+func LookupSession(db *store.DB, ref string) (*store.Session, error) {
+	s, err := db.SessionByUIDAny(ref)
+	if err != nil || s != nil {
+		return s, err
+	}
+	if uid := SessionUID(ref); uid != ref {
+		return db.SessionByUID(agentName, uid)
+	}
+	return nil, nil
 }

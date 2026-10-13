@@ -46,7 +46,7 @@ func runIndex(t *testing.T, db *store.DB, src source.Source, full bool) {
 
 func messages(t *testing.T, db *store.DB, uid string) (*store.Session, []store.Row) {
 	t.Helper()
-	s, err := db.SessionByUID(agentName, uid)
+	s, err := LookupSession(db, uid)
 	if err != nil || s == nil {
 		t.Fatalf("SessionByUID(%q) = %v, %v", uid, s, err)
 	}

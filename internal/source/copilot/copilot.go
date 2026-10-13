@@ -27,7 +27,6 @@
 package copilot
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -51,9 +50,6 @@ const (
 	maxToolResult = 4 * 1024
 	maxToolInput  = 1 * 1024
 	maxTitleRunes = 200
-
-	scannerInitial = 1 << 20  // 1 MiB
-	scannerMax     = 64 << 20 // 64 MiB; the initial line holds the whole session
 )
 
 // Source implements source.Source for GitHub Copilot Chat in VS Code.
@@ -179,8 +175,9 @@ func scanFile(ctx context.Context, db *store.DB, file string, full bool, out cha
 	state := store.IndexState{SourcePath: abs, MtimeNs: mtimeNs, Size: size, LastOffset: size}
 	truncate := prev != nil || full
 	if err != nil {
+		// Keep what is indexed and leave the state alone, so the file is
+		// retried once VS Code finishes writing it.
 		log.Printf("copilot: %s: %v", abs, err)
-		out <- source.Batch{State: state, Truncate: truncate}
 		return nil
 	}
 
@@ -192,6 +189,20 @@ func scanFile(ctx context.Context, db *store.DB, file string, full bool, out cha
 		// Not a chat session; remember it so we skip it until it changes.
 		out <- source.Batch{State: state, Truncate: truncate}
 		return nil
+	}
+
+	if !truncate {
+		// VS Code rewrites <id>.json as <id>.jsonl when it migrates a
+		// session. If the session was indexed from another file, replace
+		// those rows instead of adding to them.
+		if existing, err := db.SessionByUID(agentName, sess.SessionID); err == nil && existing != nil && existing.SourcePath != abs {
+			b := source.Batch{State: store.IndexState{SourcePath: existing.SourcePath}, Truncate: true}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case out <- b:
+			}
+		}
 	}
 
 	msgs := sessionMessages(sess)
@@ -291,13 +302,18 @@ type logEntry struct {
 
 // replayLog rebuilds the session object from an operation log, applying
 // entries the same way VS Code's ObjectMutationLog.read does. A trailing
-// line that fails to parse (a write in progress) is ignored.
+// line that fails to parse (a write in progress) is ignored. The file is
+// already in memory, so lines of any length are replayed.
 func replayLog(data []byte) (any, error) {
 	var state any
-	sc := bufio.NewScanner(bytes.NewReader(data))
-	sc.Buffer(make([]byte, scannerInitial), scannerMax)
-	for sc.Scan() {
-		line := bytes.TrimSpace(sc.Bytes())
+	for rest := data; len(rest) > 0; {
+		line := rest
+		if i := bytes.IndexByte(rest, '\n'); i >= 0 {
+			line, rest = rest[:i], rest[i+1:]
+		} else {
+			rest = nil
+		}
+		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
 		}
@@ -327,9 +343,6 @@ func replayLog(data []byte) (any, error) {
 				state = setPath(state, e.K, nil, true)
 			}
 		}
-	}
-	if err := sc.Err(); err != nil {
-		return nil, err
 	}
 	if state == nil {
 		return nil, errors.New("no initial entry")
@@ -467,6 +480,8 @@ type chatRequest struct {
 	Response             []json.RawMessage `json:"response"`
 	IsHidden             bool              `json:"isHidden"`
 	HiddenFromTranscript bool              `json:"hiddenFromTranscript"`
+	// Hides only the user's message; the response stays visible.
+	RequestHiddenFromTranscript bool `json:"requestHiddenFromTranscript"`
 }
 
 // responsePart covers the persisted response part shapes aii reads. A
@@ -513,7 +528,9 @@ func sessionMessages(s chatSession) []store.Message {
 		if ts == 0 {
 			ts = s.CreationDate / 1000
 		}
-		add("user", ts, messageText(r.Message))
+		if !r.RequestHiddenFromTranscript {
+			add("user", ts, messageText(r.Message))
+		}
 
 		// Markdown arrives in streamed chunks; join adjacent chunks into
 		// one assistant row and flush it before any other part.

@@ -17,7 +17,7 @@ called out under **Changed** when they happen.
   and installs it to `~/.local/bin`. Override the target dir with
   `AII_INSTALL_DIR` or pin a version with `AII_VERSION`.
 - Index and search sessions from four more agents. `aii index` picks them up by default, and `--source`/`--agent` accept their names. aii only reads their files and never modifies them.
-  - **pi** (`--agent pi`, cite prefix `pi/`): `~/.pi/agent/sessions`, or `PI_CODING_AGENT_SESSION_DIR` / `PI_CODING_AGENT_DIR` when set. Session names and compaction summaries become the session title and summary.
+  - **pi** (`--agent pi`, cite prefix `pi/`): `~/.pi/agent/sessions`, or `PI_CODING_AGENT_SESSION_DIR` / `PI_CODING_AGENT_DIR` when set. Session names and compaction summaries become the session title and summary. Short ids come from the random end of pi's session id, so sessions started in the same minute get different cite tokens; `aii show` also accepts the full id pi prints.
   - **opencode** (`--agent opencode` or `oc`, cite prefix `oc/`): `~/.local/share/opencode/opencode.db`, honoring `XDG_DATA_HOME` and `OPENCODE_DB`. The database is opened read-only, so indexing is safe while opencode is running.
   - **Gemini CLI** (`--agent gemini` or `gem`, cite prefix `gem/`): `~/.gemini/tmp/*/chats`, honoring `GEMINI_CLI_HOME`. Both the JSONL session log and the older single-file JSON format are read, and rewinds are respected.
   - **GitHub Copilot Chat in VS Code** (`--agent copilot` or `cop`, cite prefix `cop/`): chat sessions from VS Code, VS Code Insiders, and VSCodium, including chats opened without a folder. Each session's workspace is the folder VS Code had open.

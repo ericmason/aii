@@ -891,7 +891,7 @@ func cmdShow(args []string) error {
 		if ordFromCite >= 0 && *around < 0 && *from < 0 && *to < 0 {
 			*around = ordFromCite
 		}
-		session, err = db.SessionByUIDAny(uid)
+		session, err = pi.LookupSession(db, uid)
 	}
 	if err != nil {
 		return err
@@ -1190,7 +1190,7 @@ func cmdRelated(args []string) error {
 	defer db.Close()
 
 	uid, _ := parseSessionRef(fs.Arg(0))
-	src, err := db.SessionByUIDAny(uid)
+	src, err := pi.LookupSession(db, uid)
 	if err != nil {
 		return err
 	}
