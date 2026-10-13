@@ -43,7 +43,7 @@ func registerTools(s *server.MCPServer, db *store.DB) {
 					"Every excerpt carries a stable cite token of the form "+
 					"'<agent_code>/<short_uid>:<ordinal>' (e.g. cc/a1b2c3d4:42). "+
 					"short_uid is the shortest unique session-id prefix (8+ chars, "+
-					"regex ^(cc|cdx|cur|pi|oc|gem|cop)/[0-9A-Za-z_-]{8,}:\\d+$); "+
+					"regex ^(cc|cdx|cur|pi|oc|gem|cop|aid|cln|roo)/[0-9A-Za-z_-]{8,}:\\d+$); "+
 					"keep the agent code, which picks the session when two agents share an id. "+
 					"Pass that cite (or just the short_uid) to get_session to "+
 					"pull the exact surrounding messages. Agent codes: "+
