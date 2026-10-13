@@ -108,16 +108,30 @@ func (s *Source) Scan(ctx context.Context, db *store.DB, full bool, out chan<- s
 // duplicates removed, in a stable order.
 func (s *Source) discover(ctx context.Context, db *store.DB) []string {
 	seen := map[string]bool{}
+	var infos []os.FileInfo
 	var files []string
 	add := func(path string) {
 		abs, err := filepath.Abs(path)
 		if err != nil || seen[abs] {
 			return
 		}
-		if fi, err := os.Stat(abs); err != nil || !fi.Mode().IsRegular() {
+		seen[abs] = true
+		// A symlinked or differently cased path can reach a file already
+		// found; resolve it and compare the files themselves.
+		resolved, err := filepath.EvalSymlinks(abs)
+		if err != nil {
 			return
 		}
-		seen[abs] = true
+		fi, err := os.Stat(resolved)
+		if err != nil || !fi.Mode().IsRegular() {
+			return
+		}
+		for _, other := range infos {
+			if os.SameFile(fi, other) {
+				return
+			}
+		}
+		infos = append(infos, fi)
 		files = append(files, abs)
 	}
 
@@ -264,6 +278,12 @@ func scanFile(ctx context.Context, db *store.DB, full bool, out chan<- source.Ba
 	if start > size {
 		start, reset = 0, true
 	}
+	// A saved offset always points at a session header. If it doesn't
+	// any more, the file was replaced (say, deleted and recreated
+	// larger); re-read all of it.
+	if start > 0 && !atHeader(path, start) {
+		start, reset = 0, true
+	}
 
 	// On a reset, drop every session this file produced before so a
 	// shorter file can't leave stale sessions behind.
@@ -342,6 +362,20 @@ func scanFile(ctx context.Context, db *store.DB, full bool, out chan<- source.Ba
 		Size:       size,
 		LastOffset: lastOffset,
 	}})
+}
+
+// atHeader reports whether the bytes at offset begin a session header.
+func atHeader(path string, offset int64) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, len(headerPrefix))
+	if _, err := f.ReadAt(buf, offset); err != nil {
+		return false
+	}
+	return string(buf) == headerPrefix
 }
 
 // readRange reads path from start up to size, the length from the stat
@@ -430,6 +464,9 @@ func splitSessions(data []byte, base int64) []parsedSession {
 		kind     = kindNone
 		buf      []string
 		bufStart int64
+		// afterBlank is true at the start of the data, after a header,
+		// and after a blank line.
+		afterBlank = true
 	)
 
 	flush := func() {
@@ -457,6 +494,7 @@ func splitSessions(data []byte, base int64) []parsedSession {
 			flush()
 			sessions = append(sessions, parsedSession{Offset: lineStart, StartedAt: ts})
 			cur = &sessions[len(sessions)-1]
+			afterBlank = true
 			continue
 		}
 		if cur == nil {
@@ -476,8 +514,21 @@ func splitSessions(data []byte, base int64) []parsedSession {
 			} else {
 				flush()
 			}
+			afterBlank = true
 			continue
 		}
+		// Aider writes each user line as "#### text  " after a blank
+		// line or another user line. Anything else starting "#### " is a
+		// heading in the model's reply.
+		if k == kindUser && !(strings.HasSuffix(line, "  ") && (afterBlank || kind == kindUser)) {
+			k, text = kindAssistant, line
+		}
+		// Aider prefixes only the first line of a multi-line tool
+		// message with "> "; the rest follow it with no blank line.
+		if k == kindAssistant && kind == kindTool && !afterBlank {
+			k, text = kindTool, strings.TrimSuffix(line, "  ")
+		}
+		afterBlank = false
 		if k != kind {
 			flush()
 			kind, bufStart = k, lineStart

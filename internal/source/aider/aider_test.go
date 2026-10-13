@@ -327,6 +327,88 @@ func TestDiscoversKnownWorkspaces(t *testing.T) {
 	}
 }
 
+func roleContents(msgs []store.Message) string {
+	var parts []string
+	for _, m := range msgs {
+		parts = append(parts, m.Role+":"+m.Content)
+	}
+	return strings.Join(parts, " | ")
+}
+
+// Aider writes user input as "#### text  " after a blank line (io.py
+// user_input). A "#### " heading inside a reply is part of the reply.
+func TestHeadingInReplyStaysAssistant(t *testing.T) {
+	data := "# aider chat started at 2026-01-01 10:00:00\n\n" +
+		"#### Explain the plan  \n" +
+		"#### in two steps  \n\n" +
+		"Here is the plan.\n\n#### Step one\nDo this.\n\n" +
+		"#### thanks  \n\nYou're welcome.\n"
+	s := splitSessions([]byte(data), 0)
+	want := "user:Explain the plan\nin two steps | assistant:Here is the plan.\n\n#### Step one\nDo this. | user:thanks | assistant:You're welcome."
+	if len(s) != 1 || roleContents(s[0].Messages) != want {
+		t.Errorf("messages = %s\nwant %s", roleContents(s[0].Messages), want)
+	}
+}
+
+// Aider prefixes only the first line of a multi-line tool message with
+// "> " (io.py append_chat_history); the lines after it, up to a blank
+// line, belong to the same message.
+func TestMultiLineToolOutputStaysTool(t *testing.T) {
+	data := "# aider chat started at 2026-01-01 10:00:00\n\n" +
+		"#### run it  \n" +
+		"> Running sh greet.sh\nhello\ngoodbye  \n" +
+		"> Applied edit to greet.sh  \n\n" +
+		"Done.\n"
+	s := splitSessions([]byte(data), 0)
+	want := "user:run it | tool:[tool_result] Running sh greet.sh\nhello\ngoodbye\nApplied edit to greet.sh | assistant:Done."
+	if len(s) != 1 || roleContents(s[0].Messages) != want {
+		t.Errorf("messages = %s\nwant %s", roleContents(s[0].Messages), want)
+	}
+}
+
+// The same history file reached through a symlinked workspace is
+// indexed once.
+func TestSymlinkedWorkspaceIndexedOnce(t *testing.T) {
+	h := newHarness(t)
+	h.src.Roots = []string{}
+	h.write(readFixture(t))
+	link := filepath.Join(filepath.Dir(h.dir), "calc-link")
+	if err := os.Symlink(h.dir, link); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+	for i, ws := range []string{h.dir, link} {
+		if _, err := h.db.UpsertSession(&store.Session{
+			Agent: "claude_code", UID: "ws-" + string(rune('a'+i)), Workspace: ws, SourcePath: "/nowhere.jsonl",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := h.src.discover(context.Background(), h.db); len(got) != 1 {
+		t.Errorf("discover = %v, want one file", got)
+	}
+	h.index(false)
+	if h.sessions() != 2 {
+		t.Errorf("indexed %d sessions, want 2", h.sessions())
+	}
+}
+
+// A history file deleted and recreated larger has different bytes at
+// the saved offset; it must be re-read from the start, not from there.
+func TestRecreatedLargerFileIsReread(t *testing.T) {
+	h := newHarness(t)
+	fixture := readFixture(t)
+	h.write(fixture)
+	h.index(false)
+
+	fresh := "\n# aider chat started at 2026-05-01 09:00:00\n\n#### " +
+		strings.Repeat("Rewrite everything. ", len(fixture)/10) + " \n\nOK.\n"
+	h.write([]byte(fresh))
+	h.index(false)
+	if h.sessions() != 1 || h.messages() != 2 {
+		t.Errorf("after recreate: %d sessions, %d messages; want 1, 2", h.sessions(), h.messages())
+	}
+}
+
 func TestTitleSkipsCommandsAndKeepsFirstLine(t *testing.T) {
 	msgs := []store.Message{
 		{Role: "user", Content: "/add calc.py"},
