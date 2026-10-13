@@ -251,25 +251,40 @@ func parseDelta(ctx context.Context, r io.Reader, startOffset, size int64) (stor
 	var sess store.Session
 	var msgs []store.Message
 
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, scannerInitial), scannerMax)
+	br := bufio.NewReaderSize(r, scannerInitial)
 
-	offset := startOffset       // byte position of the NEXT unread line
+	offset := startOffset        // byte position of the NEXT unread line
 	lastCompleteOffset := offset // where to resume on next run
 
 	ordinal := 0
-	for scanner.Scan() {
+	for {
 		select {
 		case <-ctx.Done():
 			return sess, msgs, lastCompleteOffset, ctx.Err()
 		default:
 		}
 		lineStart := offset
-		line := scanner.Bytes()
-		// +1 for the \n scanner consumed. This isn't strictly correct if
-		// the final line had no newline, but Scan only returns lines that
-		// ended in a newline OR EOF; we reconcile EOF below.
-		offset += int64(len(line)) + 1
+		line, n, terminated, tooLong, err := readLine(br, scannerMax)
+		if err != nil {
+			log.Printf("claudecode: read error at offset %d: %v", lastCompleteOffset, err)
+			break
+		}
+		if n == 0 {
+			break // EOF
+		}
+		if tooLong {
+			if !terminated {
+				// An oversized line still being written: leave the offset
+				// at its start so the next run retries once it's complete.
+				log.Printf("claudecode: unfinished line over %d bytes at offset %d; will retry", scannerMax, lineStart)
+				break
+			}
+			log.Printf("claudecode: skipping %d-byte line over %d-byte limit at offset %d", n, scannerMax, lineStart)
+			offset += n
+			lastCompleteOffset = offset
+			continue
+		}
+		offset += n
 		lastCompleteOffset = offset
 
 		trimmed := trimSpace(line)
@@ -284,15 +299,10 @@ func parseDelta(ctx context.Context, r io.Reader, startOffset, size int64) (stor
 			}
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		// Skip forward past the broken line so we don't wedge forever,
-		// but log it.
-		log.Printf("claudecode: scanner error at offset %d: %v", lastCompleteOffset, err)
-	}
 
-	// If the file's last line has no trailing newline, Scan still returned
-	// it but we have no way to know from here. We conservatively cap the
-	// offset at `size` so SaveState never records beyond EOF.
+	// Cap the offset at `size` (the size stat'd before reading) so
+	// SaveState never records beyond the EOF it saw, even if the file
+	// grew while we read it.
 	if lastCompleteOffset > size {
 		lastCompleteOffset = size
 	}
@@ -303,11 +313,53 @@ func parseDelta(ctx context.Context, r io.Reader, startOffset, size int64) (stor
 			sess.StartedAt = msgs[0].TS
 		}
 		sess.EndedAt = msgs[len(msgs)-1].TS
-		if sess.Title == "" {
+		// Derive a title only from a read that starts at the top of the
+		// file. On an incremental run the first user message here is a
+		// later turn, and the store keeps the newest non-empty title, so
+		// deriving one would replace the session's real title.
+		if sess.Title == "" && startOffset == 0 {
 			sess.Title = firstUserText(msgs)
 		}
 	}
 	return sess, msgs, lastCompleteOffset, nil
+}
+
+// readLine reads one '\n'-terminated line from br. It returns the line
+// without its trailing newline, the number of bytes consumed (including
+// the newline), and whether a newline terminated it. A line longer than
+// max is consumed in full but not buffered: tooLong is set and line is
+// nil. At EOF with nothing left, n is 0 and err is nil.
+func readLine(br *bufio.Reader, max int) (line []byte, n int64, terminated, tooLong bool, err error) {
+	var buf []byte
+	for {
+		chunk, rerr := br.ReadSlice('\n')
+		n += int64(len(chunk))
+		if !tooLong {
+			if len(buf)+len(chunk) > max+1 { // +1 allows for the newline
+				tooLong = true
+				buf = nil
+			} else {
+				buf = append(buf, chunk...)
+			}
+		}
+		switch {
+		case rerr == nil:
+			terminated = true
+		case errors.Is(rerr, bufio.ErrBufferFull):
+			continue
+		case errors.Is(rerr, io.EOF):
+		default:
+			return nil, n, false, tooLong, rerr
+		}
+		break
+	}
+	if tooLong {
+		return nil, n, terminated, true, nil
+	}
+	if terminated {
+		buf = buf[:len(buf)-1]
+	}
+	return buf, n, terminated, false, nil
 }
 
 // handleLine decodes a single JSONL record and returns 0, 1, or 2 messages.

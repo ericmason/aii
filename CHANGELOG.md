@@ -34,6 +34,8 @@ called out under **Changed** when they happen.
   excluded word.
 - `aii search` no longer hangs when the query contains a newline or
   carriage return.
+- Claude Code sessions keep their original title when new turns are indexed. Before, each incremental index run retitled the session with the first user message it had just read.
+- A Claude Code transcript line larger than 16 MiB no longer stops indexing of that file. aii logs a warning, skips the line, and indexes everything after it; before, nothing past that line was ever indexed.
 
 ## [0.5.1] - 2026-05-27
 
