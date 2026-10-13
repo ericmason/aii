@@ -36,6 +36,7 @@ called out under **Changed** when they happen.
   carriage return.
 - Claude Code sessions keep their original title when new turns are indexed. Before, each incremental index run retitled the session with the first user message it had just read.
 - A Claude Code transcript line larger than 16 MiB no longer stops indexing of that file. aii logs a warning, skips the line, and indexes everything after it; before, nothing past that line was ever indexed.
+- Indexing a Claude Code transcript while Claude Code is writing to it no longer drops or duplicates messages. aii now waits for a line to be complete before indexing it, and leaves lines written during the index run for the next run.
 
 ## [0.5.1] - 2026-05-27
 
