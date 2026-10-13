@@ -29,7 +29,11 @@ called out under **Changed** when they happen.
   now work as boolean operators between terms, so
   `aii search 'download OR extract'` matches either word and
   `aii search 'extract NOT download'` excludes the second. Lowercase
-  `and`/`or`/`not` are still ordinary search terms.
+  `and`/`or`/`not` are still ordinary search terms. A query that starts
+  with `NOT` matches nothing instead of everything containing the
+  excluded word.
+- `aii search` no longer hangs when the query contains a newline or
+  carriage return.
 
 ## [0.5.1] - 2026-05-27
 

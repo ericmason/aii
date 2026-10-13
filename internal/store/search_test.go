@@ -25,6 +25,9 @@ func TestNormalizeMatch(t *testing.T) {
 		{`auth OR AND token`, `auth* AND token*`},
 		{`NOT`, `""`},
 		{`auth OR !!!`, `auth*`},
+		{`auth NOT !!! token`, `auth* token*`},
+		{`NOT auth`, `""`},
+		{`NOT auth token`, `token*`},
 		// Lowercase operator words are ordinary search terms.
 		{`this or that`, `this* or* that*`},
 		{`semi:colon`, `semicolon*`},
@@ -61,11 +64,17 @@ func TestNormalizeMatchTrigram(t *testing.T) {
 		{`a longerword`, `"longerword"`},
 		// FTS operators sanitized like bare words.
 		{`(AND)`, `"AND"`},
-		// Operators pass through; dropping a short term drops its operator.
+		// Operators pass through. If a short term is dropped from a query
+		// with operators, the trigram branch is skipped entirely.
 		{`download OR app`, `"download" OR "app"`},
-		{`ab OR download`, `"download"`},
-		{`download OR ab`, `"download"`},
 		{`download NOT scratch`, `"download" NOT "scratch"`},
+		{`ab OR download`, ""},
+		{`download NOT ab`, ""},
+		{`download AND ab OR zzzz`, ""},
+		{`a OR NOT download`, ""},
+		// A leading NOT excludes; it never turns into a search for its term.
+		{`NOT download`, ""},
+		{`NOT download extract`, ""},
 	}
 	for _, c := range cases {
 		if got := normalizeMatchTrigram(c.in); got != c.want {

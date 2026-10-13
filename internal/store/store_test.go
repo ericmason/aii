@@ -103,6 +103,10 @@ func TestSearch_BooleanOperators(t *testing.T) {
 		Agent: "claudecode", UID: "sess-b", Workspace: "repoB",
 		Title: "session b", StartedAt: 300, EndedAt: 400, SourcePath: "/tmp/b.jsonl",
 	}, []Message{{Ordinal: 1, Role: "user", TS: 300, Content: "extract into scratch"}})
+	sidC := seed(t, db, &Session{
+		Agent: "claudecode", UID: "sess-c", Workspace: "repoC",
+		Title: "session c", StartedAt: 500, EndedAt: 600, SourcePath: "/tmp/c.jsonl",
+	}, []Message{{Ordinal: 1, Role: "user", TS: 500, Content: "download ab archive"}})
 
 	sessions := func(q string) map[int64]bool {
 		t.Helper()
@@ -125,6 +129,13 @@ func TestSearch_BooleanOperators(t *testing.T) {
 	}
 	if got := sessions("OR"); len(got) != 0 {
 		t.Errorf("bare operator should match nothing, got %v", got)
+	}
+	// A short excluded term must not let the trigram branch bring it back.
+	if got := sessions("download NOT ab"); !got[sidA] || got[sidC] {
+		t.Errorf("download NOT ab should match A but not C, got %v", got)
+	}
+	if got := sessions("NOT download"); len(got) != 0 {
+		t.Errorf("leading NOT should match nothing, got %v", got)
 	}
 }
 

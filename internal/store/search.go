@@ -262,9 +262,11 @@ func (d *DB) RangeRows(sessionID int64, fromOrdinal, toOrdinal int) ([]Row, erro
 // alphanumeric runes in bare words are stripped — this keeps special
 // FTS5 syntax (parens/colons/stars) from detonating on user input.
 // Uppercase AND, OR, and NOT between two terms pass through as boolean
-// operators; anywhere else they're dropped.
+// operators; anywhere else they're dropped, except that a NOT with no
+// term before it also drops the term after it, so "NOT x" matches
+// nothing rather than everything containing x.
 func normalizeMatch(q string) string {
-	out := joinMatch(tokenizeMatch(q), func(it matchItem) string {
+	out, _ := joinMatch(tokenizeMatch(q), func(it matchItem) string {
 		switch {
 		case it.text == "":
 			return ""
@@ -288,14 +290,27 @@ func normalizeMatch(q string) string {
 // prefix stars. Each bare token and each quoted phrase becomes a quoted
 // phrase; tokens shorter than 3 chars are dropped. Boolean operators
 // follow the same rules as normalizeMatch. Returns "" when no usable
-// tokens remain — callers then skip the trigram branch entirely.
+// tokens remain — callers then skip the trigram branch entirely. Also
+// returns "" when the query has operators and a term was dropped: the
+// operators would then group differently than in the porter query, and
+// since the two branches are UNIONed, the trigram side would return rows
+// the porter side excludes (for example "download NOT ab").
 func normalizeMatchTrigram(q string) string {
-	return joinMatch(tokenizeMatch(q), func(it matchItem) string {
+	items := tokenizeMatch(q)
+	out, dropped := joinMatch(items, func(it matchItem) string {
 		if len([]rune(it.text)) < 3 {
 			return ""
 		}
 		return `"` + it.text + `"`
 	})
+	if dropped {
+		for _, it := range items {
+			if it.op {
+				return ""
+			}
+		}
+	}
+	return out
 }
 
 // matchItem is one piece of a user query: a bare word, a quoted phrase,
@@ -346,19 +361,28 @@ func tokenizeMatch(q string) []matchItem {
 
 // joinMatch renders items into a MATCH expression. render returns "" to
 // drop a term. An operator is kept only when a kept term sits on each
-// side of it; of several operators in a row, the last one wins.
-func joinMatch(items []matchItem, render func(matchItem) string) string {
+// side of it; of several operators in a row, the last one wins, and an
+// operator whose right-hand term is dropped goes with it. A NOT with no
+// kept term before it drops the next term too. dropped reports whether
+// any term was dropped.
+func joinMatch(items []matchItem, render func(matchItem) string) (expr string, dropped bool) {
 	var out []string
 	pendingOp := ""
+	skipNext := false
 	for _, it := range items {
 		if it.op {
 			if len(out) > 0 {
 				pendingOp = it.text
+			} else if it.text == "NOT" {
+				skipNext = true
 			}
 			continue
 		}
 		term := render(it)
-		if term == "" {
+		if skipNext || term == "" {
+			skipNext = false
+			pendingOp = ""
+			dropped = true
 			continue
 		}
 		if pendingOp != "" {
@@ -367,7 +391,7 @@ func joinMatch(items []matchItem, render func(matchItem) string) string {
 		}
 		out = append(out, term)
 	}
-	return strings.Join(out, " ")
+	return strings.Join(out, " "), dropped
 }
 
 func isSpace(r rune) bool { return r == ' ' || r == '\t' || r == '\n' || r == '\r' }
