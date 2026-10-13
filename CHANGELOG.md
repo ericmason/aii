@@ -47,7 +47,9 @@ called out under **Changed** when they happen.
 - `aii search` returns in seconds instead of minutes for common words
   such as `app` or `download` on a large index. Search now builds
   excerpt snippets only for the sessions it returns, not for every
-  matching message.
+  matching message, and looks up each match's session through a new
+  index. The first command after upgrading builds that index once,
+  which can take a minute or two on a multi-gigabyte index.
 
 ## [0.5.1] - 2026-05-27
 

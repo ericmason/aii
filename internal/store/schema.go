@@ -72,4 +72,9 @@ CREATE INDEX IF NOT EXISTS idx_sessions_agent     ON sessions(agent);
 CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace);
 CREATE INDEX IF NOT EXISTS idx_sessions_started   ON sessions(started_at);
 CREATE INDEX IF NOT EXISTS idx_messages_session   ON messages(session_id, ordinal);
+-- Covering index for search: maps an FTS hit's rowid to its session and
+-- metadata without reading the message row, whose large content spreads
+-- rows across many pages. Search names it with INDEXED BY because the
+-- planner otherwise prefers the rowid lookup.
+CREATE INDEX IF NOT EXISTS idx_messages_id_session ON messages(id, session_id, ordinal, role, ts);
 `

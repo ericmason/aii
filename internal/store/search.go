@@ -100,6 +100,8 @@ func (d *DB) Search(q Query) ([]Result, error) {
 	// afterward, only for the excerpts on the returned page (see
 	// pageSnippets): a common term can match hundreds of thousands of
 	// messages, and snippet() over all of them dominated search time.
+	// Each hit is joined to its session through idx_messages_id_session,
+	// which avoids reading every matching message row from disk.
 	const triPenalty = 0.7 // bm25 returns negative scores; scale shrinks magnitude
 	var args []any
 
@@ -109,7 +111,7 @@ func (d *DB) Search(q Query) ([]Result, error) {
             SELECT m.id AS mid, m.session_id, m.ordinal, m.role, m.ts,
                    %d AS src, bm25(messages_fts) AS score
             FROM messages_fts
-            JOIN messages m ON m.id = messages_fts.rowid
+            JOIN messages m INDEXED BY idx_messages_id_session ON m.id = messages_fts.rowid
             JOIN sessions s ON s.id = m.session_id
             WHERE messages_fts MATCH ? %s`, srcPorter, filterSQL)
 	args = append(args, matchPorter)
@@ -121,7 +123,7 @@ func (d *DB) Search(q Query) ([]Result, error) {
             SELECT m.id, m.session_id, m.ordinal, m.role, m.ts,
                    %d, bm25(messages_fts_tri) * %f
             FROM messages_fts_tri
-            JOIN messages m ON m.id = messages_fts_tri.rowid
+            JOIN messages m INDEXED BY idx_messages_id_session ON m.id = messages_fts_tri.rowid
             JOIN sessions s ON s.id = m.session_id
             WHERE messages_fts_tri MATCH ? %s`, srcTrigram, triPenalty, filterSQL)
 		args = append(args, matchTri)
