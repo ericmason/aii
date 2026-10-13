@@ -229,6 +229,8 @@ XDG_DATA_HOME=~/scratch/aii-agent-runs/opencode/home/.local/share AII_DB=/tmp/t.
 
 The script header lists its settings (model, versions, output dir). A run costs under one cent with the default model. Gemini CLI is not covered because it only speaks Google's Gemini API, and Copilot Chat cannot run outside VS Code. Trimmed recordings live in `internal/source/pi/testdata/` and `internal/source/opencode/testdata/`; they contain only the script's prompts.
 
+Aider, Cline CLI, and Roo CLI each have their own image and runner: `scripts/agent-fixtures/<tool>-run.sh <output-dir>` builds `<tool>.Dockerfile` and runs two short tasks with `<output-dir>` as the container's HOME. Pass the key as `OPENROUTER_API_KEY` or through a Docker env file named by `ENV_FILE`. The Roo CLI writes the key to `<output-dir>/.vscode-mock/global-storage/secrets.json`, so delete that file after the run. Trimmed recordings live in `internal/source/aider/testdata/recorded.md` and `internal/source/cline/testdata/recorded/`.
+
 ### Agent-mode CLI changes
 
 Any new command that emits data should:
@@ -261,7 +263,7 @@ Both `structuredContent` and a text fallback must be set. Use
 every message's content (and session title/summary) before writing,
 unless the user passes `aii index --no-redact`. `--redact-sources` also
 rewrites the JSONL transcript files in place — Cursor's SQLite store is
-skipped, as are pi, opencode, Gemini CLI, and Copilot Chat. If you add a new secret shape, keep the placeholder pure ASCII
+skipped, as are pi, opencode, Gemini CLI, Copilot Chat, Aider, Cline, and Roo Code. If you add a new secret shape, keep the placeholder pure ASCII
 and free of `"` or `\` so running the pattern over a raw JSONL line
 still leaves a parseable document.
 

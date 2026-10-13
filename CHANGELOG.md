@@ -32,7 +32,7 @@ called out under **Changed** when they happen.
   manual prebuilt-binary download (with a per-platform asset table);
   `go install` / `go build` are now documented as the "from source"
   path for Go developers rather than the only option.
-- `aii index --redact-sources` prints a note and skips pi, opencode, Gemini CLI, and Copilot Chat, because aii does not rewrite those agents' files.
+- `aii index --redact-sources` prints a note and skips pi, opencode, Gemini CLI, Copilot Chat, Aider, Cline, and Roo Code, because aii does not rewrite those agents' files.
 
 ### Fixed
 - `aii search` no longer fails with `fts5: syntax error near "*"` when
