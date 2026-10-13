@@ -23,6 +23,14 @@ called out under **Changed** when they happen.
   `go install` / `go build` are now documented as the "from source"
   path for Go developers rather than the only option.
 
+### Fixed
+- `aii search` no longer fails with `fts5: syntax error near "*"` when
+  the query contains an uppercase `AND`, `OR`, or `NOT`. These words
+  now work as boolean operators between terms, so
+  `aii search 'download OR extract'` matches either word and
+  `aii search 'extract NOT download'` excludes the second. Lowercase
+  `and`/`or`/`not` are still ordinary search terms.
+
 ## [0.5.1] - 2026-05-27
 
 ### Added
