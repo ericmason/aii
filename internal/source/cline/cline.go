@@ -344,7 +344,7 @@ func (s *Source) scanTask(ctx context.Context, db *store.DB, full bool, out chan
 	uiPath := filepath.Join(filepath.Dir(path), uiMessagesFile)
 	if !tf.sdk {
 		// The final answer can reach ui_messages.json without the API
-		// history changing (see uiCompletion), so a change to either
+		// history changing (see withUICompletions), so a change to either
 		// file triggers a rescan.
 		if ui, err := os.Stat(uiPath); err == nil {
 			size += ui.Size()
@@ -368,13 +368,11 @@ func (s *Source) scanTask(ctx context.Context, db *store.DB, full bool, out chan
 	if err != nil {
 		return fmt.Errorf("parse %s: %w", path, err)
 	}
-	msgs, minTS, maxTS := renderMessages(raw)
+	rendered := raw
 	if !tf.sdk {
-		if m, ok := uiCompletion(uiPath, raw); ok {
-			msgs = append(msgs, m)
-			maxTS = max(maxTS, m.TS)
-		}
+		rendered = withUICompletions(uiPath, raw)
 	}
+	msgs, minTS, maxTS := renderMessages(rendered)
 
 	// Decide whether the indexed messages are still a prefix of the file.
 	base := 0
@@ -730,24 +728,37 @@ func workspaceFromEnvironment(raw []apiMessage) string {
 	return ""
 }
 
-// uiCompletion returns the task's final answer as an assistant message
-// when it is missing from the API history. The Roo CLI in --print mode
-// exits before saving the last assistant turn to
-// api_conversation_history.json, so its attempt_completion result exists
-// only as a "completion_result" entry in ui_messages.json. It is used only
-// when the API history doesn't already end with an assistant turn and the
-// completion is newer than every API message.
-func uiCompletion(path string, raw []apiMessage) (store.Message, bool) {
-	var lastTS int64
-	for _, m := range raw {
-		lastTS = max(lastTS, m.TS)
+// withUICompletions returns raw with each task answer that is missing
+// from the API history added as an assistant turn at its place in time.
+// The Roo CLI in --print mode exits before saving the last assistant turn
+// to api_conversation_history.json, so its attempt_completion result
+// exists only as a "completion_result" entry in ui_messages.json, and a
+// resumed task keeps that gap in the middle of its history.
+//
+// A completion counts as missing only when the API turns on both sides
+// of it are user turns (or it comes after the last turn, which is a user
+// turn). An assistant turn on either side holds the answer: Roo can show
+// completion_result just before it saves that turn. Histories without
+// timestamps (older Cline and Roo Code versions) are returned unchanged,
+// because a completion can't be placed in them.
+func withUICompletions(path string, raw []apiMessage) []apiMessage {
+	var turns []int // indexes of user and assistant turns in raw
+	for i, m := range raw {
+		role := strings.ToLower(m.Role)
+		if m.Type == "reasoning" || (role != "user" && role != "assistant") {
+			continue
+		}
+		if m.TS <= 0 {
+			return raw
+		}
+		turns = append(turns, i)
 	}
-	if n := len(raw); n > 0 && strings.EqualFold(raw[n-1].Role, "assistant") {
-		return store.Message{}, false
+	if len(turns) == 0 {
+		return raw
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return store.Message{}, false
+		return raw
 	}
 	var ui []struct {
 		TS      int64  `json:"ts"`
@@ -757,19 +768,40 @@ func uiCompletion(path string, raw []apiMessage) (store.Message, bool) {
 		Partial bool   `json:"partial"`
 	}
 	if json.Unmarshal(data, &ui) != nil {
-		return store.Message{}, false
+		return raw
 	}
-	for i := len(ui) - 1; i >= 0; i-- {
-		u := ui[i]
-		if u.Type != "say" || u.Say != "completion_result" || u.Partial {
+	isUser := func(i int) bool { return strings.EqualFold(raw[i].Role, "user") }
+	insertAt := map[int][]apiMessage{} // raw index -> completions placed before it
+	for _, u := range ui {
+		text := strings.TrimSpace(u.Text)
+		if u.Type != "say" || u.Say != "completion_result" || u.Partial || u.TS <= 0 || text == "" {
 			continue
 		}
-		if u.TS <= lastTS || strings.TrimSpace(u.Text) == "" {
-			return store.Message{}, false
+		k := 0 // turns at or before the completion
+		for k < len(turns) && raw[turns[k]].TS <= u.TS {
+			k++
 		}
-		return store.Message{Role: "assistant", TS: u.TS / 1000, Content: strings.TrimSpace(u.Text)}, true
+		if k == 0 || !isUser(turns[k-1]) || (k < len(turns) && !isUser(turns[k])) {
+			continue
+		}
+		at := len(raw)
+		if k < len(turns) {
+			at = turns[k]
+		}
+		content, _ := json.Marshal(text)
+		insertAt[at] = append(insertAt[at], apiMessage{Role: "assistant", Content: content, TS: u.TS})
 	}
-	return store.Message{}, false
+	if len(insertAt) == 0 {
+		return raw
+	}
+	out := make([]apiMessage, 0, len(raw)+len(insertAt))
+	for i := 0; i <= len(raw); i++ {
+		out = append(out, insertAt[i]...)
+		if i < len(raw) {
+			out = append(out, raw[i])
+		}
+	}
+	return out
 }
 
 // uiMessageRange returns the earliest and latest ts in ui_messages.json.

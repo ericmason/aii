@@ -477,6 +477,76 @@ func TestCompletionResultArrivingLaterIsIndexed(t *testing.T) {
 	}
 }
 
+// writeRooTask writes one Roo Code task with the given API history and
+// ui_messages.json, indexes it, and returns its message contents.
+func writeRooTask(t *testing.T, api, ui string) []row {
+	t.Helper()
+	root := t.TempDir()
+	dir := filepath.Join(root, "tasks", rooTask)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, apiHistoryFile), []byte(api), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, uiMessagesFile), []byte(ui), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	db := openDB(t)
+	src := NewRooCode()
+	src.Roots = []string{root}
+	run(t, db, false, src)
+	_, rs := sessionRows(t, db, "roo_code", rooTask)
+	return rs
+}
+
+func contents(rs []row) string {
+	var parts []string
+	for _, r := range rs {
+		parts = append(parts, r.Role+":"+r.Content)
+	}
+	return strings.Join(parts, " | ")
+}
+
+// Older Cline and Roo Code histories carry no ts, so a completion_result
+// can't be placed; a task that ends on a user turn must not get its old
+// answer repeated at the end.
+func TestCompletionNotRepeatedWithoutTimestamps(t *testing.T) {
+	rs := writeRooTask(t,
+		`[{"role":"user","content":"Fix it"},{"role":"assistant","content":"Done."},{"role":"user","content":"<feedback>more</feedback>"}]`,
+		`[{"ts":1760000001000,"type":"say","say":"completion_result","text":"Done."}]`)
+	if got, want := contents(rs), "user:Fix it | assistant:Done. | user:more"; got != want {
+		t.Errorf("messages = %s\nwant %s", got, want)
+	}
+}
+
+// A completion that exists only in ui_messages.json stays in place when
+// the task is resumed with a newer user turn.
+func TestCompletionKeptAfterResume(t *testing.T) {
+	rs := writeRooTask(t,
+		`[{"role":"user","content":"Task","ts":1760000000000},
+		  {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}],"ts":1760000002000},
+		  {"role":"user","content":"Follow-up","ts":1760000005000},
+		  {"role":"assistant","content":"Answer 2","ts":1760000006000}]`,
+		`[{"ts":1760000003000,"type":"say","say":"completion_result","text":"Answer 1"}]`)
+	if got, want := contents(rs), "user:Task | tool:[tool_result] ok | assistant:Answer 1 | user:Follow-up | assistant:Answer 2"; got != want {
+		t.Errorf("messages = %s\nwant %s", got, want)
+	}
+}
+
+// Roo can show completion_result before it saves the assistant turn that
+// produced it; that turn already holds the answer.
+func TestCompletionNotDuplicatedWhenAssistantSavedLater(t *testing.T) {
+	rs := writeRooTask(t,
+		`[{"role":"user","content":"Task","ts":1760000000000},
+		  {"role":"assistant","content":"Answer","ts":1760000004000},
+		  {"role":"user","content":"Thanks","ts":1760000009000}]`,
+		`[{"ts":1760000003000,"type":"say","say":"completion_result","text":"Answer"}]`)
+	if got, want := contents(rs), "user:Task | assistant:Answer | user:Thanks"; got != want {
+		t.Errorf("messages = %s\nwant %s", got, want)
+	}
+}
+
 func TestIDTime(t *testing.T) {
 	cases := map[string]int64{
 		"1760000000000":                        1760000000,
