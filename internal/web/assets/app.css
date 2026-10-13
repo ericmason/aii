@@ -24,6 +24,18 @@
   --cursor-bg:    rgba(180, 190, 210, 0.07);
   --cursor-fg:    #b9bdc8;
   --cursor-ln:    rgba(180, 190, 210, 0.24);
+  --pi-bg:        rgba(167, 139, 250, 0.13);
+  --pi-fg:        #c4b5fd;
+  --pi-ln:        rgba(167, 139, 250, 0.35);
+  --opencode-bg:  rgba(250, 178, 131, 0.10);
+  --opencode-fg:  #f5c9a0;
+  --opencode-ln:  rgba(250, 178, 131, 0.30);
+  --gemini-bg:    rgba(66, 133, 244, 0.13);
+  --gemini-fg:    #8ab4f8;
+  --gemini-ln:    rgba(66, 133, 244, 0.35);
+  --copilot-bg:   rgba(52, 211, 153, 0.10);
+  --copilot-fg:   #a7f3d0;
+  --copilot-ln:   rgba(52, 211, 153, 0.30);
 
   --r-sm: 5px;
   --r-md: 9px;
@@ -317,6 +329,10 @@ main {
 .agent.claude_code { background: var(--anthropic-bg); color: var(--anthropic-fg); border-color: var(--anthropic-ln); }
 .agent.codex       { background: var(--openai-bg);    color: var(--openai-fg);    border-color: var(--openai-ln); }
 .agent.cursor      { background: var(--cursor-bg);    color: var(--cursor-fg);    border-color: var(--cursor-ln); }
+.agent.pi          { background: var(--pi-bg);        color: var(--pi-fg);        border-color: var(--pi-ln); }
+.agent.opencode    { background: var(--opencode-bg);  color: var(--opencode-fg);  border-color: var(--opencode-ln); }
+.agent.gemini      { background: var(--gemini-bg);    color: var(--gemini-fg);    border-color: var(--gemini-ln); }
+.agent.copilot     { background: var(--copilot-bg);   color: var(--copilot-fg);   border-color: var(--copilot-ln); }
 
 .more {
   margin-left: auto;

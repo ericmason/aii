@@ -23,6 +23,10 @@ Indexed sources:
 - **Claude Code** — `~/.claude/projects/*/*.jsonl`
 - **Codex** — `~/.codex/sessions/**/rollout-*.jsonl` + `~/.codex/history.jsonl`
 - **Cursor** — `~/Library/Application Support/Cursor/User/{workspaceStorage,globalStorage}/state.vscdb`
+- **pi** — `~/.pi/agent/sessions/*/*.jsonl` (honors `PI_CODING_AGENT_SESSION_DIR` and `PI_CODING_AGENT_DIR`)
+- **opencode** — `~/.local/share/opencode/opencode.db`, opened read-only (honors `XDG_DATA_HOME` and `OPENCODE_DB`)
+- **Gemini CLI** — `~/.gemini/tmp/*/chats/` (honors `GEMINI_CLI_HOME`)
+- **GitHub Copilot Chat in VS Code** — `chatSessions/` under each VS Code `workspaceStorage` folder, plus `globalStorage/emptyWindowChatSessions/`, for VS Code, VS Code Insiders, and VSCodium on macOS, Linux, and Windows
 
 ## Install
 
@@ -106,7 +110,7 @@ machine-readable schema (commands, flags, cite-token grammar).
 ### `aii index` — build/update the index
 
 ```
-aii index [--source all|cc|codex|cursor] [--full] [--verbose]
+aii index [--source all|cc|codex|cursor|pi|opencode|gemini|copilot] [--full] [--verbose]
           [--no-redact] [--redact-sources]
 ```
 
@@ -115,6 +119,8 @@ Each source parses its own format and emits batches of
 Cursor composers are fingerprinted by bubble count, so only new bubbles
 are re-read. A single writer goroutine applies batches inside
 per-session transactions.
+
+pi files are append-only and tail-follow by byte offset like the other JSONL sources. opencode, Gemini CLI, and Copilot Chat rewrite earlier messages in place, so aii re-reads a whole session when it changes (by row counts and update times for opencode, by file size and mtime for the others) and replaces what it had indexed for it.
 
 Incremental by default; `--full` wipes state and reindexes. `--verbose`
 logs each session as it's written and runs an `ANALYZE` at the end.
@@ -126,14 +132,14 @@ URLs, Authorization headers, …) are scrubbed out of message content
 Pass `--no-redact` to keep raw content. Pass `--redact-sources` to also
 rewrite the underlying transcript files in place — this is destructive
 and only touches JSONL sources (Claude Code + Codex); Cursor's SQLite
-store is skipped. The list of patterns lives in
+store is skipped, and so are pi, opencode, Gemini CLI, and Copilot Chat, which aii only reads. The list of patterns lives in
 [`internal/redact/redact.go`](internal/redact/redact.go); add to it if
 your workflow has a proprietary token shape.
 
 ### `aii search` — hybrid full-text search
 
 ```
-aii search <query> [--agent cc|codex|cursor] [--workspace DIR] [--role user|assistant|tool|thinking]
+aii search <query> [--agent cc|codex|cursor|pi|opencode|gemini|copilot] [--workspace DIR] [--role user|assistant|tool|thinking]
                    [--since 7d|2026-01-01] [--limit 20] [--offset 0]
                    [--pretty|--ndjson|--json] [--agent-mode] [--max-bytes N]
 ```
@@ -150,7 +156,7 @@ Output mode resolution:
 ### `aii sessions` — browse sessions by time / agent / workspace
 
 ```
-aii sessions [--agent cc|codex|cursor] [--workspace DIR]
+aii sessions [--agent cc|codex|cursor|pi|opencode|gemini|copilot] [--workspace DIR]
              [--since 7d|2026-01-01] [--until 1d|2026-01-15]
              [--limit 50] [--offset 0] [--order asc|desc]
              [--pretty|--ndjson|--json] [--max-bytes N]
@@ -302,8 +308,8 @@ token** in the format:
 <agent_code>/<short_uid>:<ordinal>
 ```
 
-- `agent_code` — `cc` (Claude Code), `cdx` (Codex), `cur` (Cursor).
-- `short_uid` — first 8 chars of the session UUID.
+- `agent_code` — `cc` (Claude Code), `cdx` (Codex), `cur` (Cursor), `pi` (pi), `oc` (opencode), `gem` (Gemini CLI), `cop` (Copilot Chat).
+- `short_uid` — first 8 chars of the session UUID. For opencode, the `ses_` prefix of the session id is dropped first.
 - `ordinal` — 0-indexed position of the message within the session.
 
 Example: `cc/32e869ac:319`. You can hand this token back to `aii show`
@@ -311,7 +317,7 @@ or the MCP `get_session` tool as the session ref — the ordinal will be
 used as the anchor if you don't pass one explicitly. Regex:
 
 ```
-^(cc|cdx|cur)/[0-9a-f]{8}:\d+$
+^(cc|cdx|cur|pi|oc|gem|cop)/[0-9a-f]{8}:\d+$
 ```
 
 ### Token budgets
@@ -417,6 +423,10 @@ internal/source/         # pluggable source.Source interface
 internal/source/claudecode   # claude code jsonl parser
 internal/source/codex        # codex rollouts + history parser
 internal/source/cursor       # cursor sqlite storage parser
+internal/source/pi           # pi session jsonl parser
+internal/source/opencode     # opencode sqlite parser (read-only)
+internal/source/gemini       # gemini cli chat recording parser
+internal/source/copilot      # vs code copilot chat session parser
 internal/indexer/        # orchestrates sources → single writer goroutine
 internal/store/          # sqlite schema, search (hybrid FTS), migrations
 internal/web/            # local HTTP UI

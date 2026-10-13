@@ -268,6 +268,14 @@ func normalizeAgent(a string) string {
 		return "codex"
 	case "cursor":
 		return "cursor"
+	case "pi":
+		return "pi"
+	case "opencode", "oc":
+		return "opencode"
+	case "gemini", "gem":
+		return "gemini"
+	case "copilot", "cop":
+		return "copilot"
 	}
 	return a
 }

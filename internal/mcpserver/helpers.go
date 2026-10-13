@@ -19,6 +19,14 @@ func NormalizeAgent(a string) string {
 		return "codex"
 	case "cursor", "cur":
 		return "cursor"
+	case "pi":
+		return "pi"
+	case "opencode", "oc":
+		return "opencode"
+	case "gemini", "gem":
+		return "gemini"
+	case "copilot", "cop":
+		return "copilot"
 	}
 	return a
 }
@@ -50,6 +58,12 @@ func ShortAgent(a string) string {
 		return "cdx"
 	case "cursor":
 		return "cur"
+	case "opencode":
+		return "oc"
+	case "gemini":
+		return "gem"
+	case "copilot":
+		return "cop"
 	}
 	return a
 }
@@ -78,6 +92,8 @@ func parseSessionRef(ref string) (string, int) {
 	if i := strings.Index(ref, "/"); i >= 0 {
 		ref = ref[i+1:]
 	}
+	// opencode prints session ids as ses_<id>; the index stores <id>.
+	ref = strings.TrimPrefix(ref, "ses_")
 	ordinal := -1
 	if i := strings.LastIndex(ref, ":"); i >= 0 {
 		var n int

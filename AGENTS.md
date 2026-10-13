@@ -14,7 +14,7 @@ If you're a human, read `README.md` instead.
 ## 1. Using `aii` as an agent
 
 `aii` is a local SQLite FTS index over your user's Claude Code / Codex
-/ Cursor transcripts. You can query it to recover context the user
+/ Cursor / pi / opencode / Gemini CLI / GitHub Copilot Chat transcripts. You can query it to recover context the user
 expects you to "remember" — prior decisions, commands run, error
 messages seen, implementations discussed.
 
@@ -69,11 +69,11 @@ state across lines.
 <agent_code>/<short_uid>:<ordinal>    e.g.  cc/32e869ac:319
 ```
 
-- `agent_code` ∈ {`cc`, `cdx`, `cur`}
-- `short_uid` = first 8 chars of the session UUID
+- `agent_code` ∈ {`cc`, `cdx`, `cur`, `pi`, `oc`, `gem`, `cop`} (Claude Code, Codex, Cursor, pi, opencode, Gemini CLI, Copilot Chat)
+- `short_uid` = first 8 chars of the session UUID (for opencode, of the session id without its `ses_` prefix)
 - `ordinal` = 0-indexed position within the session
 
-Regex: `^(cc|cdx|cur)/[0-9a-f]{8}:\d+$`
+Regex: `^(cc|cdx|cur|pi|oc|gem|cop)/[0-9a-f]{8}:\d+$`
 
 **When you cite a claim to the user, use this token.** It's
 copy-pasteable, unambiguous, and round-trips to `get_session` /
@@ -158,6 +158,10 @@ internal/source/         # source.Source interface + per-agent parsers.
 internal/source/claudecode
 internal/source/codex
 internal/source/cursor
+internal/source/pi           # ~/.pi/agent/sessions JSONL, offset-based
+internal/source/opencode     # opencode.db, opened read-only (mode=ro)
+internal/source/gemini       # ~/.gemini/tmp/*/chats JSONL record log
+internal/source/copilot      # VS Code chatSessions operation log / JSON
 internal/indexer/        # orchestrates Sources → single writer goroutine
 internal/redact/         # regex-based secret scrubber used by the indexer
 internal/store/          # sqlite schema, hybrid FTS search, migrations
@@ -206,6 +210,20 @@ binary, zero network" promise is the whole design.
    `internal/mcpserver/helpers.go`. Update `agent_codes` in `help
    --json` and the cite-token regex.
 4. Update `README.md` (source list) and this file.
+5. Never write to the agent's data. Open SQLite stores with `mode=ro` (not `immutable=1`, which ignores a live WAL), and skip the source in `--redact-sources`.
+6. Test the parser with synthetic fixtures in `internal/source/<name>/*_test.go`, including a second index pass that adds no rows.
+
+### Recording real sessions for parser tests
+
+`scripts/agent-fixtures/run.sh` installs the newest pi and opencode releases in a Docker container and runs a short two-turn chat with each through OpenRouter (read `README.md`, then write `notes.txt`). The container's HOME is a host directory under `~/scratch/aii-agent-runs/`, so the session files land on the host, where `aii` can index them with a throwaway `AII_DB`:
+
+```sh
+OPENROUTER_API_KEY=... scripts/agent-fixtures/run.sh all   # or pi, opencode
+PI_CODING_AGENT_SESSION_DIR=~/scratch/aii-agent-runs/pi/home/.pi/agent/sessions AII_DB=/tmp/t.db aii index --source pi
+XDG_DATA_HOME=~/scratch/aii-agent-runs/opencode/home/.local/share AII_DB=/tmp/t.db aii index --source opencode
+```
+
+The script header lists its settings (model, versions, output dir). A run costs under one cent with the default model. Gemini CLI is not covered because it only speaks Google's Gemini API, and Copilot Chat cannot run outside VS Code. Trimmed recordings live in `internal/source/pi/testdata/` and `internal/source/opencode/testdata/`; they contain only the script's prompts.
 
 ### Agent-mode CLI changes
 
@@ -239,7 +257,7 @@ Both `structuredContent` and a text fallback must be set. Use
 every message's content (and session title/summary) before writing,
 unless the user passes `aii index --no-redact`. `--redact-sources` also
 rewrites the JSONL transcript files in place — Cursor's SQLite store is
-skipped. If you add a new secret shape, keep the placeholder pure ASCII
+skipped, as are pi, opencode, Gemini CLI, and Copilot Chat. If you add a new secret shape, keep the placeholder pure ASCII
 and free of `"` or `\` so running the pattern over a raw JSONL line
 still leaves a parseable document.
 

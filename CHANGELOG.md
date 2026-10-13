@@ -16,12 +16,19 @@ called out under **Changed** when they happen.
   binary from the latest GitHub release, verifies its SHA-256 checksum,
   and installs it to `~/.local/bin`. Override the target dir with
   `AII_INSTALL_DIR` or pin a version with `AII_VERSION`.
+- Index and search sessions from four more agents. `aii index` picks them up by default, and `--source`/`--agent` accept their names. aii only reads their files and never modifies them.
+  - **pi** (`--agent pi`, cite prefix `pi/`): `~/.pi/agent/sessions`, or `PI_CODING_AGENT_SESSION_DIR` / `PI_CODING_AGENT_DIR` when set. Session names and compaction summaries become the session title and summary.
+  - **opencode** (`--agent opencode` or `oc`, cite prefix `oc/`): `~/.local/share/opencode/opencode.db`, honoring `XDG_DATA_HOME` and `OPENCODE_DB`. The database is opened read-only, so indexing is safe while opencode is running.
+  - **Gemini CLI** (`--agent gemini` or `gem`, cite prefix `gem/`): `~/.gemini/tmp/*/chats`, honoring `GEMINI_CLI_HOME`. Both the JSONL session log and the older single-file JSON format are read, and rewinds are respected.
+  - **GitHub Copilot Chat in VS Code** (`--agent copilot` or `cop`, cite prefix `cop/`): chat sessions from VS Code, VS Code Insiders, and VSCodium, including chats opened without a folder. Each session's workspace is the folder VS Code had open.
+- `aii doctor` lists the data paths it reads for the new agents, and the web UI and TUI can filter by them.
 
 ### Changed
 - README install instructions now lead with the one-line installer and
   manual prebuilt-binary download (with a per-platform asset table);
   `go install` / `go build` are now documented as the "from source"
   path for Go developers rather than the only option.
+- `aii index --redact-sources` prints a note and skips pi, opencode, Gemini CLI, and Copilot Chat, because aii does not rewrite those agents' files.
 
 ## [0.5.1] - 2026-05-27
 

@@ -1,12 +1,12 @@
 ---
 name: aii
-description: Search and recall past AI coding conversations (Claude Code, Codex, Cursor) indexed locally by aii. Use when the user says "remember when", "last time", "what did we", "how did I fix", references prior decisions/commands/errors, or asks about past work that predates the current conversation. Also use proactively before making recommendations that build on prior work.
+description: Search and recall past AI coding conversations (Claude Code, Codex, Cursor, pi, opencode, Gemini CLI, GitHub Copilot Chat) indexed locally by aii. Use when the user says "remember when", "last time", "what did we", "how did I fix", references prior decisions/commands/errors, or asks about past work that predates the current conversation. Also use proactively before making recommendations that build on prior work.
 ---
 
 # aii — search past AI chats
 
-`aii` is a local SQLite FTS index over the user's Claude Code, Codex, and
-Cursor transcripts. Query it to recover context the user expects you to
+`aii` is a local SQLite FTS index over the user's Claude Code, Codex,
+Cursor, pi, opencode, Gemini CLI, and GitHub Copilot Chat transcripts. Query it to recover context the user expects you to
 "remember" — prior decisions, commands run, error messages seen,
 implementations discussed.
 
@@ -46,10 +46,10 @@ Every excerpt and message carries a stable token:
 <agent_code>/<short_uid>:<ordinal>     e.g.  cc/32e869ac:319
 ```
 
-- `agent_code` ∈ {`cc` = Claude Code, `cdx` = Codex, `cur` = Cursor}
+- `agent_code` ∈ {`cc` = Claude Code, `cdx` = Codex, `cur` = Cursor, `pi` = pi, `oc` = opencode, `gem` = Gemini CLI, `cop` = Copilot Chat}
 - `short_uid` = first 8 chars of the session UUID
 - `ordinal` = 0-indexed position within the session
-- Regex: `^(cc|cdx|cur)/[0-9a-f]{8}:\d+$`
+- Regex: `^(cc|cdx|cur|pi|oc|gem|cop)/[0-9a-f]{8}:\d+$`
 
 **When you cite a claim back to the user, use this token.** It's
 copy-pasteable and round-trips to `get_session` / `aii show`.

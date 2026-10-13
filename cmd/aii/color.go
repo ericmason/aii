@@ -65,6 +65,10 @@ func cAccent(s string) string { return sgr(s, "36") }  // cyan
 //   Claude Code → Anthropic clay orange (#D97757-ish)
 //   Codex      → OpenAI teal-green (#10A37F-ish)
 //   Cursor     → Cursor's dark monochrome (near-black with light text)
+//   pi         → violet
+//   opencode   → warm sand on charcoal
+//   Gemini CLI → Google blue
+//   Copilot    → GitHub green
 func cAgent(agent string) string {
 	label := " " + padCenter(short(agent), 3) + " "
 	switch agent {
@@ -74,6 +78,14 @@ func cAgent(agent string) string {
 		return sgr(label, "1", "38;5;231", "48;5;29") // bold white on teal
 	case "cursor", "cur":
 		return sgr(label, "1", "38;5;252", "48;5;237") // light gray on near-black
+	case "pi":
+		return sgr(label, "1", "38;5;231", "48;5;98") // bold white on violet
+	case "opencode", "oc":
+		return sgr(label, "1", "38;5;223", "48;5;236") // sand on charcoal
+	case "gemini", "gem":
+		return sgr(label, "1", "38;5;231", "48;5;33") // bold white on blue
+	case "copilot", "cop":
+		return sgr(label, "1", "38;5;231", "48;5;28") // bold white on green
 	}
 	return sgr(label, "7")
 }
@@ -102,6 +114,12 @@ func short(a string) string {
 		return "cdx"
 	case "cursor":
 		return "cur"
+	case "opencode":
+		return "oc"
+	case "gemini":
+		return "gem"
+	case "copilot":
+		return "cop"
 	}
 	return a
 }

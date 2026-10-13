@@ -5,7 +5,9 @@ package main
 // — the assumption is "they really mean it." We cover the JSONL sources
 // (Claude Code + Codex); Cursor stores its conversations inside an
 // SQLite DB that's often locked by a live Cursor process, so we skip it
-// with a clear message instead of risking corruption.
+// with a clear message instead of risking corruption. pi, opencode,
+// Gemini CLI, and Copilot Chat are skipped too: aii only ever reads their
+// data.
 
 import (
 	"fmt"
@@ -43,6 +45,8 @@ func redactSourceFiles(sources []source.Source, verbose bool) (int, error) {
 				fmt.Fprintln(os.Stderr, "redact-sources: cursor stores conversations in an SQLite DB that's usually locked by the Cursor app; skipping")
 				cursorNoted = true
 			}
+		case "pi", "opencode", "gemini", "copilot":
+			fmt.Fprintf(os.Stderr, "redact-sources: %s transcripts are not rewritten; skipping\n", s.Name())
 		}
 	}
 

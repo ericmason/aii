@@ -30,6 +30,9 @@ function agentLabel(a) {
   if (a === "claude_code") return "Claude Code";
   if (a === "codex") return "Codex";
   if (a === "cursor") return "Cursor";
+  if (a === "opencode") return "opencode";
+  if (a === "gemini") return "Gemini CLI";
+  if (a === "copilot") return "Copilot Chat";
   return a;
 }
 
