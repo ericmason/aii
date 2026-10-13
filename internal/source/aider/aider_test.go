@@ -197,6 +197,67 @@ func TestShrunkFileDropsOldSessions(t *testing.T) {
 	}
 }
 
+func TestTitleArrivesOnLaterRun(t *testing.T) {
+	h := newHarness(t)
+	// First read: Aider has printed its startup output but the user
+	// hasn't typed anything yet.
+	start := "# aider chat started at 2026-05-01 10:00:00\n\n> aider --model example/model  \n> Added calc.py to the chat.  \n\n"
+	h.write([]byte(start))
+	h.index(false)
+	var title string
+	h.db.QueryRow(`SELECT COALESCE(title,'') FROM sessions WHERE agent='aider'`).Scan(&title)
+	if title != "" {
+		t.Fatalf("title before any user text = %q", title)
+	}
+
+	h.write([]byte(start + "#### Add a multiply function.  \n\nDone.\n"))
+	h.index(false)
+	h.db.QueryRow(`SELECT COALESCE(title,'') FROM sessions WHERE agent='aider'`).Scan(&title)
+	if title != "Add a multiply function." || h.sessions() != 1 || h.messages() != 3 {
+		t.Errorf("after user text: title %q, %d sessions, %d messages", title, h.sessions(), h.messages())
+	}
+}
+
+func TestUnterminatedLastLineIsReread(t *testing.T) {
+	h := newHarness(t)
+	// The write stops partway through a new session's header line.
+	first := "# aider chat started at 2026-05-01 10:00:00\n\n#### One.  \n\nReply one.\n\n# aider chat sta"
+	h.write([]byte(first))
+	h.index(false)
+	off := int64(-1)
+	if err := h.db.QueryRow(`SELECT last_offset FROM index_state WHERE source_path = ?`, h.file).Scan(&off); err != nil {
+		t.Fatal(err)
+	}
+	if off != 0 {
+		t.Fatalf("saved offset %d moved past the last complete header", off)
+	}
+
+	h.write([]byte(first + "rted at 2026-05-01 11:00:00\n\n#### Two.  \n\nReply two.\n"))
+	h.index(false)
+	if h.sessions() != 2 || h.messages() != 4 {
+		t.Fatalf("after completing the line: %d sessions, %d messages", h.sessions(), h.messages())
+	}
+	var last string
+	h.db.QueryRow(`
+		SELECT m.content FROM messages m JOIN sessions s ON s.id = m.session_id
+		WHERE s.title = 'One.' ORDER BY m.ordinal DESC LIMIT 1`).Scan(&last)
+	if last != "Reply one." {
+		t.Errorf("partial header left in the first session: %q", last)
+	}
+}
+
+func TestReadRangeStopsAtStatSize(t *testing.T) {
+	h := newHarness(t)
+	h.write([]byte("0123456789appended later"))
+	got, err := readRange(h.file, 3, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "3456789" {
+		t.Errorf("readRange = %q, want bytes 3..10 only", got)
+	}
+}
+
 func TestDiscoversKnownWorkspaces(t *testing.T) {
 	h := newHarness(t)
 	h.src.Roots = []string{} // no configured roots

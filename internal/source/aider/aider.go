@@ -282,19 +282,14 @@ func scanFile(ctx context.Context, db *store.DB, full bool, out chan<- source.Ba
 		}
 	}
 
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if _, err := f.Seek(start, io.SeekStart); err != nil {
-		return err
-	}
-	data, err := io.ReadAll(f)
+	data, err := readRange(path, start, size)
 	if err != nil {
 		return err
 	}
 
+	// The saved offsets are always the start of a header line, so they
+	// never land inside an unterminated last line: a partial line is
+	// re-read, and its session replaced, on the next run.
 	sessions := splitSessions(data, start)
 	workspace := filepath.Dir(path)
 	lastOffset := start
@@ -347,6 +342,21 @@ func scanFile(ctx context.Context, db *store.DB, full bool, out chan<- source.Ba
 		Size:       size,
 		LastOffset: lastOffset,
 	}})
+}
+
+// readRange reads path from start up to size, the length from the stat
+// the saved state records. Text Aider appends during the read is left for
+// the next run, so the stored size always matches what was indexed.
+func readRange(path string, start, size int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return nil, err
+	}
+	return io.ReadAll(io.LimitReader(f, size-start))
 }
 
 func send(ctx context.Context, out chan<- source.Batch, b source.Batch) error {
