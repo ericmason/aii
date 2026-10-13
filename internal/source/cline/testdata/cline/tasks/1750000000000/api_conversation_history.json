@@ -1,0 +1,26 @@
+[
+  {
+    "role": "user",
+    "content": [
+      {"type": "text", "text": "<task>\nSummarize notes.txt in one sentence.\n</task>"},
+      {"type": "text", "text": "<environment_details>\n# Current Working Directory (/home/dev/projects/notes) Files\nnotes.txt\n</environment_details>"}
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": [
+      {"type": "text", "text": "<read_file>\n<path>notes.txt</path>\n</read_file>"}
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      {"type": "text", "text": "[read_file for 'notes.txt'] Result:"},
+      {"type": "text", "text": "Buy oat milk. Call the plumber on Tuesday."}
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": "The notes are a reminder to buy oat milk and call the plumber."
+  }
+]

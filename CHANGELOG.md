@@ -22,6 +22,9 @@ called out under **Changed** when they happen.
   - **Gemini CLI** (`--agent gemini` or `gem`, cite prefix `gem/`): `~/.gemini/tmp/*/chats`, honoring `GEMINI_CLI_HOME`. Both the JSONL session log and the older single-file JSON format are read, and rewinds are respected.
   - **GitHub Copilot Chat in VS Code** (`--agent copilot` or `cop`, cite prefix `cop/`): chat sessions from VS Code, VS Code Insiders, and VSCodium, including chats opened without a folder. Each session's workspace is the folder VS Code had open.
 - `aii doctor` lists the data paths it reads for the new agents, and the web UI and TUI can filter by them.
+- Aider chats are now indexed. aii reads `.aider.chat.history.md` from every workspace already in the index and its git root, plus any directories you list in the new `AII_AIDER_ROOTS` variable. Each `# aider chat started at` run becomes its own session. Filter with `--source aider` / `--agent aider`; cite tokens use `aid/`.
+- Cline tasks are now indexed, from the VS Code extension (`globalStorage/saoudrizwan.claude-dev`, including VS Code Insiders, VSCodium, Cursor, and VS Code Server) and from the Cline CLI (`~/.cline/data`, honoring `CLINE_DATA_DIR` and `CLINE_DIR`). Filter with `--source cline` / `--agent cline`; cite tokens use `cln/`.
+- Roo Code tasks are now indexed, from the VS Code extension (`globalStorage/rooveterinaryinc.roo-cline`) and the Roo CLI (`~/.vscode-mock/global-storage`). Filter with `--source roo` / `--agent roo`; cite tokens use `roo/`.
 
 ### Changed
 - README install instructions now lead with the one-line installer and

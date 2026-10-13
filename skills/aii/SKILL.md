@@ -1,12 +1,12 @@
 ---
 name: aii
-description: Search and recall past AI coding conversations (Claude Code, Codex, Cursor, pi, opencode, Gemini CLI, GitHub Copilot Chat) indexed locally by aii. Use when the user says "remember when", "last time", "what did we", "how did I fix", references prior decisions/commands/errors, or asks about past work that predates the current conversation. Also use proactively before making recommendations that build on prior work.
+description: Search and recall past AI coding conversations (Claude Code, Codex, Cursor, pi, opencode, Gemini CLI, GitHub Copilot Chat, Aider, Cline, Roo Code) indexed locally by aii. Use when the user says "remember when", "last time", "what did we", "how did I fix", references prior decisions/commands/errors, or asks about past work that predates the current conversation. Also use proactively before making recommendations that build on prior work.
 ---
 
 # aii — search past AI chats
 
 `aii` is a local SQLite FTS index over the user's Claude Code, Codex,
-Cursor, pi, opencode, Gemini CLI, and GitHub Copilot Chat transcripts. Query it to recover context the user expects you to
+Cursor, pi, opencode, Gemini CLI, GitHub Copilot Chat, Aider, Cline, and Roo Code transcripts. Query it to recover context the user expects you to
 "remember" — prior decisions, commands run, error messages seen,
 implementations discussed.
 
@@ -46,10 +46,10 @@ Every excerpt and message carries a stable token:
 <agent_code>/<short_uid>:<ordinal>     e.g.  cc/32e869ac:319
 ```
 
-- `agent_code` ∈ {`cc` = Claude Code, `cdx` = Codex, `cur` = Cursor, `pi` = pi, `oc` = opencode, `gem` = Gemini CLI, `cop` = Copilot Chat}
+- `agent_code` ∈ {`cc` = Claude Code, `cdx` = Codex, `cur` = Cursor, `pi` = pi, `oc` = opencode, `gem` = Gemini CLI, `cop` = Copilot Chat, `aid` = Aider, `cln` = Cline, `roo` = Roo Code}
 - `short_uid` = shortest prefix of the session id, at least 8 chars, that no other session shares; copy it whole
 - `ordinal` = 0-indexed position within the session
-- Regex: `^(cc|cdx|cur|pi|oc|gem|cop)/[0-9A-Za-z_-]{8,}:\d+$`
+- Regex: `^(cc|cdx|cur|pi|oc|gem|cop|aid|cln|roo)/[0-9A-Za-z_-]{8,}:\d+$`
 - Keep the agent code when you pass a token back: it picks the right session when two agents share an id. Ids match without regard to case.
 - If `aii show` says an id is ambiguous, it lists the matching sessions; rerun with one of the listed ids.
 

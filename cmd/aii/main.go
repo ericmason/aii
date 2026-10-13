@@ -1,6 +1,6 @@
 // Command aii indexes and searches local AI coding-agent transcripts
-// (Claude Code, Codex, Cursor, pi, opencode, Gemini CLI, GitHub Copilot Chat) using a SQLite
-// FTS5 database.
+// (Claude Code, Codex, Cursor, pi, opencode, Gemini CLI, GitHub Copilot Chat,
+// Aider, Cline, Roo Code) using a SQLite FTS5 database.
 package main
 
 import (
@@ -25,7 +25,9 @@ import (
 	"github.com/ericmason/aii/internal/indexer"
 	"github.com/ericmason/aii/internal/mcpserver"
 	"github.com/ericmason/aii/internal/source"
+	"github.com/ericmason/aii/internal/source/aider"
 	"github.com/ericmason/aii/internal/source/claudecode"
+	"github.com/ericmason/aii/internal/source/cline"
 	"github.com/ericmason/aii/internal/source/codex"
 	"github.com/ericmason/aii/internal/source/cursor"
 	"github.com/ericmason/aii/internal/source/copilot"
@@ -42,9 +44,10 @@ const aiiVersion = "0.5.1"
 const usageText = `aii — search every AI chat you've had locally
 
 Usage:
-  aii index   [--source all|cc|codex|cursor|pi|opencode|gemini|copilot] [--full]
-               [--verbose] [--no-redact] [--redact-sources]
-  aii search  <query> [--agent cc|codex|cursor|pi|opencode|gemini|copilot] [--workspace DIR]
+  aii index   [--source all|cc|codex|cursor|pi|opencode|gemini|copilot|aider|cline|roo]
+               [--full] [--verbose] [--no-redact] [--redact-sources]
+  aii search  <query> [--agent cc|codex|cursor|pi|opencode|gemini|copilot|aider|cline|roo]
+                       [--workspace DIR]
                        [--since 7d|2026-01-01] [--limit 20]
                        [--json|--ndjson|--pretty | --format pretty|json|ndjson]
   aii sessions [--agent ..] [--workspace DIR] [--since 7d] [--until ..]
@@ -137,7 +140,7 @@ func main() {
 
 func cmdIndex(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("index", flag.ExitOnError)
-	which := fs.String("source", "all", "all|cc|codex|cursor|pi|opencode|gemini|copilot")
+	which := fs.String("source", "all", "all|cc|codex|cursor|pi|opencode|gemini|copilot|aider|cline|roo")
 	full := fs.Bool("full", false, "reindex from scratch")
 	verbose := fs.Bool("verbose", false, "log each session indexed")
 	quiet := fs.Bool("quiet", false, "suppress the summary line (used by background spawns)")
@@ -217,6 +220,7 @@ func selectSources(which string) ([]source.Source, error) {
 	case "all":
 		add(claudecode.New()); add(codex.New()); add(cursor.New())
 		add(pi.New()); add(opencode.New()); add(gemini.New()); add(copilot.New())
+		add(aider.New()); add(cline.New()); add(cline.NewRooCode())
 	case "cc", "claude_code", "claude":
 		add(claudecode.New())
 	case "codex":
@@ -231,6 +235,12 @@ func selectSources(which string) ([]source.Source, error) {
 		add(gemini.New())
 	case "copilot", "cop":
 		add(copilot.New())
+	case "aider", "aid":
+		add(aider.New())
+	case "cline", "cln":
+		add(cline.New())
+	case "roo", "roo_code":
+		add(cline.NewRooCode())
 	default:
 		return nil, fmt.Errorf("unknown --source %q", which)
 	}
@@ -241,7 +251,7 @@ func selectSources(which string) ([]source.Source, error) {
 
 func cmdSearch(args []string) error {
 	fs := flag.NewFlagSet("search", flag.ExitOnError)
-	agent := fs.String("agent", "", "cc|codex|cursor|pi|opencode|gemini|copilot")
+	agent := fs.String("agent", "", "cc|codex|cursor|pi|opencode|gemini|copilot|aider|cline|roo")
 	workspace := fs.String("workspace", "", "exact workspace path")
 	role := fs.String("role", "", "user|assistant|tool|thinking")
 	since := fs.String("since", "", "7d | 2026-01-01")
@@ -512,7 +522,7 @@ func pluralS(n int) string {
 // search: pretty on a TTY, ndjson when piped, with the same flags.
 func cmdSessions(args []string) error {
 	fs := flag.NewFlagSet("sessions", flag.ExitOnError)
-	agent := fs.String("agent", "", "cc|codex|cursor|pi|opencode|gemini|copilot")
+	agent := fs.String("agent", "", "cc|codex|cursor|pi|opencode|gemini|copilot|aider|cline|roo")
 	workspace := fs.String("workspace", "", "exact workspace path")
 	since := fs.String("since", "", "7d | 2026-01-01")
 	until := fs.String("until", "", "7d | 2026-01-01 — upper bound on session time")
@@ -674,7 +684,7 @@ func cmdAsk(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("ask", flag.ExitOnError)
 	k := fs.Int("k", 6, "number of sessions to retrieve")
 	contextN := fs.Int("context", 2, "messages of context to include around each hit (±N)")
-	agent := fs.String("agent", "", "cc|codex|cursor|pi|opencode|gemini|copilot")
+	agent := fs.String("agent", "", "cc|codex|cursor|pi|opencode|gemini|copilot|aider|cline|roo")
 	workspace := fs.String("workspace", "", "exact workspace path")
 	since := fs.String("since", "", "7d | 2026-01-01")
 	cmdStr := fs.String("cmd", "", "LLM command to pipe the prompt into (default: $AII_ASK_CMD or `claude -p`)")
@@ -761,7 +771,7 @@ func cmdAsk(ctx context.Context, args []string) error {
 // the model sees both question and answer, not just the matching line.
 func buildAskPrompt(db *store.DB, question string, results []store.Result, contextN, maxChars int) (string, []string, error) {
 	var b strings.Builder
-	b.WriteString("You are helping the user recall details from their own past conversations with AI coding agents (Claude Code, Codex, Cursor, pi, opencode, Gemini CLI, GitHub Copilot Chat).\n")
+	b.WriteString("You are helping the user recall details from their own past conversations with AI coding agents (Claude Code, Codex, Cursor, pi, opencode, Gemini CLI, GitHub Copilot Chat, Aider, Cline, Roo Code).\n")
 	b.WriteString("Answer the user's question using ONLY the transcript excerpts below. If the excerpts don't contain the answer, say so plainly — do not invent.\n")
 	b.WriteString("Cite sources inline as [uid:ordinal] (e.g. [7a3f2b1c:42]). Prefer concrete details (commands run, file paths, exact error text) over paraphrase.\n\n")
 	b.WriteString("--- transcript excerpts ---\n\n")
@@ -1171,7 +1181,7 @@ func max(a, b int) int {
 // hybrid search with the source session filtered out.
 func cmdRelated(args []string) error {
 	fs := flag.NewFlagSet("related", flag.ExitOnError)
-	agent := fs.String("agent", "", "cc|codex|cursor|pi|opencode|gemini|copilot")
+	agent := fs.String("agent", "", "cc|codex|cursor|pi|opencode|gemini|copilot|aider|cline|roo")
 	since := fs.String("since", "", "7d | 2026-01-01")
 	limit := fs.Int("limit", 10, "max results")
 	jsonOut := fs.Bool("json", false, "emit a single JSON array")
@@ -1335,14 +1345,14 @@ func cmdHelpJSON() error {
 		Binary:          "aii",
 		DBPath:          store.DefaultPath(),
 		CiteTokenFormat: "<agent_code>/<short_uid>:<ordinal>",
-		CiteTokenExpr:   `^(cc|cdx|cur|pi|oc|gem|cop)/[0-9A-Za-z_-]{8,}:\d+$`,
-		AgentCodes:      []string{"cc", "cdx", "cur", "pi", "oc", "gem", "cop"},
+		CiteTokenExpr:   `^(cc|cdx|cur|pi|oc|gem|cop|aid|cln|roo)/[0-9A-Za-z_-]{8,}:\d+$`,
+		AgentCodes:      []string{"cc", "cdx", "cur", "pi", "oc", "gem", "cop", "aid", "cln", "roo"},
 		Roles:           []string{"user", "assistant", "thinking", "tool"},
 		SinceFormats:    []string{"7d", "24h", "30m", "1w", "2026-01-01", "RFC3339"},
 		OutputModes:     []string{"pretty", "json", "ndjson"},
-		Env:             []string{"AII_DB", "AII_AGENT", "AII_ASK_CMD", "NO_COLOR", "FORCE_COLOR"},
+		Env:             []string{"AII_DB", "AII_AGENT", "AII_ASK_CMD", "AII_AIDER_ROOTS", "NO_COLOR", "FORCE_COLOR"},
 		Commands: []cmdInfo{
-			{"index", "Scan agent directories and update the FTS index", "aii index [--source all|cc|codex|cursor|pi|opencode|gemini|copilot] [--full] [--verbose] [--no-redact] [--redact-sources]", []flagInfo{
+			{"index", "Scan agent directories and update the FTS index", "aii index [--source all|cc|codex|cursor|pi|opencode|gemini|copilot|aider|cline|roo] [--full] [--verbose] [--no-redact] [--redact-sources]", []flagInfo{
 				{"--no-redact", "", "disable the default pass that scrubs API keys, tokens, and PEM blocks from indexed content"},
 				{"--redact-sources", "", "also rewrite the original JSONL transcripts in place with redacted content (destructive; JSONL sources only)"},
 			}},
@@ -1508,6 +1518,9 @@ func cmdDoctor() error {
 	fmt.Printf("  opencode     %s/opencode*.db\n", opencode.DefaultDataDir())
 	fmt.Printf("  gemini       %s\n", strings.Join(gemini.DefaultRoots(), ", "))
 	fmt.Printf("  copilot      %s\n", strings.Join(copilot.DefaultUserDirs(), ", "))
+	fmt.Printf("  aider        <project>/.aider.chat.history.md (known workspaces + $%s)\n", aider.RootsEnv)
+	fmt.Printf("  cline        %s/.cline/data/{sessions,tasks} + VS Code globalStorage/saoudrizwan.claude-dev/tasks\n", home)
+	fmt.Printf("  roo_code     VS Code globalStorage/rooveterinaryinc.roo-cline/tasks + %s/.vscode-mock/global-storage/tasks\n", home)
 
 	if err == nil {
 		db, err := store.Open(dbPath)
@@ -1579,6 +1592,12 @@ func normalizeAgent(a string) string {
 		return "gemini"
 	case "copilot", "cop":
 		return "copilot"
+	case "aider", "aid":
+		return "aider"
+	case "cline", "cln":
+		return "cline"
+	case "roo", "roo_code":
+		return "roo_code"
 	default:
 		return a
 	}
@@ -1598,6 +1617,12 @@ func shortAgent(a string) string {
 		return "gem"
 	case "copilot":
 		return "cop"
+	case "aider":
+		return "aid"
+	case "cline":
+		return "cln"
+	case "roo_code":
+		return "roo"
 	}
 	return a
 }

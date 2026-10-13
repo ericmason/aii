@@ -298,6 +298,12 @@ func normalizeAgent(a string) string {
 		return "gemini"
 	case "copilot", "cop":
 		return "copilot"
+	case "aider", "aid":
+		return "aider"
+	case "cline", "cln":
+		return "cline"
+	case "roo", "roo_code":
+		return "roo_code"
 	}
 	return a
 }

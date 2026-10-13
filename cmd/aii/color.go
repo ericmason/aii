@@ -120,6 +120,12 @@ func short(a string) string {
 		return "gem"
 	case "copilot":
 		return "cop"
+	case "aider":
+		return "aid"
+	case "cline":
+		return "cln"
+	case "roo_code":
+		return "roo"
 	}
 	return a
 }

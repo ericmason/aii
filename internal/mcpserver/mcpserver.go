@@ -37,7 +37,8 @@ func registerTools(s *server.MCPServer, db *store.DB) {
 		mcp.NewTool("search",
 			mcp.WithDescription(
 				"Hybrid full-text search over every AI coding-agent transcript "+
-					"indexed locally (Claude Code, Codex, Cursor, pi, opencode, Gemini CLI, GitHub Copilot Chat). Returns "+
+					"indexed locally (Claude Code, Codex, Cursor, pi, opencode, Gemini CLI, GitHub Copilot Chat, "+
+					"Aider, Cline, Roo Code). Returns "+
 					"sessions ranked by bm25 with up to 3 top excerpts each. "+
 					"Every excerpt carries a stable cite token of the form "+
 					"'<agent_code>/<short_uid>:<ordinal>' (e.g. cc/a1b2c3d4:42). "+
@@ -46,12 +47,13 @@ func registerTools(s *server.MCPServer, db *store.DB) {
 					"keep the agent code, which picks the session when two agents share an id. "+
 					"Pass that cite (or just the short_uid) to get_session to "+
 					"pull the exact surrounding messages. Agent codes: "+
-					"cc=claude_code, cdx=codex, cur=cursor, pi=pi, oc=opencode, gem=gemini, cop=copilot."),
+					"cc=claude_code, cdx=codex, cur=cursor, pi=pi, oc=opencode, gem=gemini, cop=copilot, "+
+					"aid=aider, cln=cline, roo=roo_code."),
 			mcp.WithString("query",
 				mcp.Required(),
 				mcp.Description("Free-form query. Bare words become prefix terms; quote phrases for exact match.")),
 			mcp.WithString("agent",
-				mcp.Description("Filter by agent: cc, codex, cursor, pi, opencode, gemini, or copilot. Empty = all.")),
+				mcp.Description("Filter by agent: cc, codex, cursor, pi, opencode, gemini, copilot, aider, cline, or roo. Empty = all.")),
 			mcp.WithString("workspace",
 				mcp.Description("Exact workspace path to restrict to.")),
 			mcp.WithString("role",
@@ -133,7 +135,7 @@ func registerTools(s *server.MCPServer, db *store.DB) {
 					"workspace, and message count. Pair with get_session to "+
 					"open any specific thread."),
 			mcp.WithString("agent",
-				mcp.Description("Filter by agent: cc, codex, cursor, pi, opencode, gemini, or copilot. Empty = all.")),
+				mcp.Description("Filter by agent: cc, codex, cursor, pi, opencode, gemini, copilot, aider, cline, or roo. Empty = all.")),
 			mcp.WithString("workspace",
 				mcp.Description("Exact workspace path to restrict to.")),
 			mcp.WithString("since",

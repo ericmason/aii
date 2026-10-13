@@ -1,0 +1,11 @@
+{
+  "id": "019a1b2c-3d4e-7f60-8a9b-0c1d2e3f4a5b",
+  "number": 1,
+  "ts": 1761000000000,
+  "task": "Why does the date parser reject 2026-02-30?",
+  "tokensIn": 900,
+  "tokensOut": 120,
+  "totalCost": 0.002,
+  "workspace": "/home/dev/projects/dates",
+  "mode": "ask"
+}

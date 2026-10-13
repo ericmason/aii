@@ -1,0 +1,246 @@
+package aider
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ericmason/aii/internal/indexer"
+	"github.com/ericmason/aii/internal/source"
+	"github.com/ericmason/aii/internal/store"
+)
+
+func readFixture(t *testing.T) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "history.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestSplitSessions(t *testing.T) {
+	sessions := splitSessions(readFixture(t), 0)
+	if len(sessions) != 2 {
+		t.Fatalf("got %d sessions, want 2", len(sessions))
+	}
+
+	first := sessions[0]
+	want := time.Date(2026, 3, 2, 9, 15, 4, 0, time.Local).Unix()
+	if first.StartedAt != want {
+		t.Errorf("StartedAt = %d, want %d", first.StartedAt, want)
+	}
+	var roles []string
+	for _, m := range first.Messages {
+		roles = append(roles, m.Role)
+	}
+	if got := strings.Join(roles, ","); got != "tool,user,assistant,tool" {
+		t.Errorf("roles = %s", got)
+	}
+	if got := first.Messages[1].Content; got != "Add a subtract function to calc.py.\nKeep the style of add()." {
+		t.Errorf("user message = %q", got)
+	}
+	asst := first.Messages[2].Content
+	if !strings.HasPrefix(asst, "Here is the change") || !strings.Contains(asst, "\n\ncalc.py\n```python") ||
+		!strings.HasSuffix(asst, "```") {
+		t.Errorf("assistant message lost its Markdown: %q", asst)
+	}
+	if got := first.Messages[0].Content; !strings.HasPrefix(got, "[tool_result] /usr/local/bin/aider") ||
+		!strings.Contains(got, "\nAdded calc.py to the chat.") || strings.Contains(got, "  ") {
+		t.Errorf("tool message = %q", got)
+	}
+
+	second := sessions[1]
+	if title(second.Messages) != "Add docstrings to every function." {
+		t.Errorf("title skipped no slash command: %q", title(second.Messages))
+	}
+	if second.Offset <= first.Offset {
+		t.Errorf("offsets not increasing: %d, %d", first.Offset, second.Offset)
+	}
+}
+
+func TestSplitSessionsWithoutHeader(t *testing.T) {
+	sessions := splitSessions([]byte("#### hello  \n\nhi there\n"), 0)
+	if len(sessions) != 1 || len(sessions[0].Messages) != 2 {
+		t.Fatalf("got %+v", sessions)
+	}
+}
+
+// harness wires a temp DB, a temp project, and the Aider source.
+type harness struct {
+	t    *testing.T
+	db   *store.DB
+	dir  string
+	file string
+	src  *Source
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+	tmp := t.TempDir()
+	db, err := store.Open(filepath.Join(tmp, "aii.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	dir := filepath.Join(tmp, "projects", "calc")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return &harness{
+		t: t, db: db, dir: dir,
+		file: filepath.Join(dir, HistoryFileName),
+		src:  &Source{Roots: []string{filepath.Join(tmp, "projects")}},
+	}
+}
+
+func (h *harness) write(data []byte) {
+	h.t.Helper()
+	if err := os.WriteFile(h.file, data, 0o644); err != nil {
+		h.t.Fatal(err)
+	}
+	// Make sure the mtime moves even on coarse filesystems.
+	future := time.Now().Add(time.Duration(len(data)) * time.Millisecond)
+	os.Chtimes(h.file, future, future)
+}
+
+func (h *harness) index(full bool) indexer.Stats {
+	h.t.Helper()
+	stats, err := indexer.Run(context.Background(), h.db, []source.Source{h.src}, indexer.Options{Full: full})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return stats
+}
+
+func (h *harness) count(q string, args ...any) int {
+	h.t.Helper()
+	var n int
+	if err := h.db.QueryRow(q, args...).Scan(&n); err != nil {
+		h.t.Fatal(err)
+	}
+	return n
+}
+
+func (h *harness) messages() int {
+	return h.count(`SELECT COUNT(*) FROM messages`)
+}
+
+func (h *harness) sessions() int {
+	return h.count(`SELECT COUNT(*) FROM sessions WHERE agent = 'aider'`)
+}
+
+func TestIndexIsIncrementalAndIdempotent(t *testing.T) {
+	h := newHarness(t)
+	fixture := readFixture(t)
+	h.write(fixture)
+
+	h.index(false)
+	if h.sessions() != 2 || h.messages() != 10 {
+		t.Fatalf("first run: %d sessions, %d messages", h.sessions(), h.messages())
+	}
+	var ws string
+	h.db.QueryRow(`SELECT workspace FROM sessions WHERE agent='aider' LIMIT 1`).Scan(&ws)
+	if ws != h.dir {
+		t.Errorf("workspace = %q, want %q", ws, h.dir)
+	}
+
+	// Unchanged file: nothing new.
+	if st := h.index(false); st.MessagesAdded != 0 {
+		t.Errorf("second run added %d messages", st.MessagesAdded)
+	}
+	if h.sessions() != 2 || h.messages() != 10 {
+		t.Fatalf("second run: %d sessions, %d messages", h.sessions(), h.messages())
+	}
+
+	// Aider appends more tool output to the last message group of the
+	// tail session, then starts a new session.
+	grown := append([]byte{}, fixture...)
+	grown = append(grown, []byte("> Commit 1a2b3c4 docs: add docstrings  \n\n# aider chat started at 2026-03-03 08:00:00\n\n#### Rename calc.py to mathutil.py.  \n\nDone.\n")...)
+	h.write(grown)
+	h.index(false)
+	if h.sessions() != 3 || h.messages() != 12 {
+		t.Fatalf("after append: %d sessions, %d messages", h.sessions(), h.messages())
+	}
+	var last string
+	h.db.QueryRow(`
+		SELECT m.content FROM messages m JOIN sessions s ON s.id = m.session_id
+		WHERE s.title = 'Add docstrings to every function.' ORDER BY m.ordinal DESC LIMIT 1`).Scan(&last)
+	if !strings.Contains(last, "Commit 1a2b3c4") {
+		t.Errorf("tail message not refreshed: %q", last)
+	}
+
+	// The first session was not re-read: its row keeps the same id.
+	if h.count(`SELECT COUNT(*) FROM sessions WHERE agent='aider' AND title LIKE 'Add a subtract%' AND id = 1`) != 1 {
+		t.Error("first session was rewritten on an incremental run")
+	}
+
+	// --full rebuilds to the same totals.
+	h.index(true)
+	if h.sessions() != 3 || h.messages() != 12 {
+		t.Fatalf("after full: %d sessions, %d messages", h.sessions(), h.messages())
+	}
+}
+
+func TestShrunkFileDropsOldSessions(t *testing.T) {
+	h := newHarness(t)
+	h.write(readFixture(t))
+	h.index(false)
+
+	h.write([]byte("\n# aider chat started at 2026-04-01 12:00:00\n\n#### Start over.  \n\nOK.\n"))
+	h.index(false)
+	if h.sessions() != 1 || h.messages() != 2 {
+		t.Fatalf("after shrink: %d sessions, %d messages", h.sessions(), h.messages())
+	}
+}
+
+func TestDiscoversKnownWorkspaces(t *testing.T) {
+	h := newHarness(t)
+	h.src.Roots = []string{} // no configured roots
+	h.write(readFixture(t))
+
+	// Another source recorded a session in this project.
+	if _, err := h.db.UpsertSession(&store.Session{
+		Agent: "claude_code", UID: "11111111-2222-3333-4444-555555555555",
+		Workspace: filepath.Join(h.dir, "sub"), SourcePath: "/nowhere.jsonl",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(h.dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	h.index(false)
+	if h.sessions() != 2 {
+		t.Fatalf("found %d sessions via workspace lookup, want 2", h.sessions())
+	}
+
+	// Once indexed, the file is found again even with no workspace hint.
+	if _, err := h.db.Exec(`DELETE FROM sessions WHERE agent='claude_code'`); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.src.discover(context.Background(), h.db); len(got) != 1 || got[0] != h.file {
+		t.Errorf("discover = %v", got)
+	}
+}
+
+func TestTitleSkipsCommandsAndKeepsFirstLine(t *testing.T) {
+	msgs := []store.Message{
+		{Role: "user", Content: "/add calc.py"},
+		{Role: "tool", Content: "[tool_result] Added calc.py to the chat"},
+		{Role: "user", Content: "Add a subtract function.\nKeep the style of add()."},
+	}
+	if got := title(msgs); got != "Add a subtract function." {
+		t.Errorf("title = %q", got)
+	}
+}
+
+func TestSessionUIDIsHex(t *testing.T) {
+	uid := sessionUID("/p/.aider.chat.history.md", 42)
+	if len(uid) != 32 || strings.Trim(uid, "0123456789abcdef") != "" {
+		t.Errorf("uid %q is not 32 hex chars", uid)
+	}
+}

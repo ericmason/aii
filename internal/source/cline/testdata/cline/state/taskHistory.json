@@ -1,0 +1,11 @@
+[
+  {
+    "id": "1760000000000",
+    "ts": 1760000000000,
+    "task": "Add a --verbose flag to the greeter CLI.",
+    "tokensIn": 1200,
+    "tokensOut": 300,
+    "totalCost": 0.01,
+    "cwdOnTaskInitialization": "/home/dev/projects/greeter"
+  }
+]

@@ -27,6 +27,9 @@ Indexed sources:
 - **opencode** — `~/.local/share/opencode/opencode.db`, opened read-only (honors `XDG_DATA_HOME` and `OPENCODE_DB`)
 - **Gemini CLI** — `~/.gemini/tmp/*/chats/` (honors `GEMINI_CLI_HOME`)
 - **GitHub Copilot Chat in VS Code** — `chatSessions/` under each VS Code `workspaceStorage` folder, plus `globalStorage/emptyWindowChatSessions/`, for VS Code, VS Code Insiders, and VSCodium on macOS, Linux, and Windows
+- **Aider** — `.aider.chat.history.md` in each project. Aider has no central store, so aii looks next to every workspace already in the index (and that workspace's git root), plus any directories listed in `AII_AIDER_ROOTS`.
+- **Cline** — `~/.cline/data` (Cline CLI, or `$CLINE_DATA_DIR`, or `$CLINE_DIR/data`) and the VS Code extension's `globalStorage/saoudrizwan.claude-dev`
+- **Roo Code** — the VS Code extension's `globalStorage/rooveterinaryinc.roo-cline` and the Roo CLI's `~/.vscode-mock/global-storage`
 
 ## Install
 
@@ -110,14 +113,17 @@ machine-readable schema (commands, flags, cite-token grammar).
 ### `aii index` — build/update the index
 
 ```
-aii index [--source all|cc|codex|cursor|pi|opencode|gemini|copilot] [--full] [--verbose]
+aii index [--source all|cc|codex|cursor|pi|opencode|gemini|copilot|aider|cline|roo] [--full] [--verbose]
           [--no-redact] [--redact-sources]
 ```
 
 Each source parses its own format and emits batches of
 `(session, new-messages)`. JSONL sources tail-follow by byte offset;
 Cursor composers are fingerprinted by bubble count, so only new bubbles
-are re-read. A single writer goroutine applies batches inside
+are re-read. Aider history files are re-read from the start of their
+last chat session; Cline and Roo Code tasks are re-read when the file
+changes, and only messages past the previously indexed prefix are
+added. A single writer goroutine applies batches inside
 per-session transactions.
 
 pi files are append-only and tail-follow by byte offset like the other JSONL sources. opencode, Gemini CLI, and Copilot Chat rewrite earlier messages in place, so aii re-reads a whole session when it changes (by row counts and update times for opencode, by file size and mtime for the others) and replaces what it had indexed for it.
@@ -132,14 +138,14 @@ URLs, Authorization headers, …) are scrubbed out of message content
 Pass `--no-redact` to keep raw content. Pass `--redact-sources` to also
 rewrite the underlying transcript files in place — this is destructive
 and only touches JSONL sources (Claude Code + Codex); Cursor's SQLite
-store is skipped, and so are pi, opencode, Gemini CLI, and Copilot Chat, which aii only reads. The list of patterns lives in
+store is skipped, and so are pi, opencode, Gemini CLI, Copilot Chat, Aider, Cline, and Roo Code, which aii only reads. The list of patterns lives in
 [`internal/redact/redact.go`](internal/redact/redact.go); add to it if
 your workflow has a proprietary token shape.
 
 ### `aii search` — hybrid full-text search
 
 ```
-aii search <query> [--agent cc|codex|cursor|pi|opencode|gemini|copilot] [--workspace DIR] [--role user|assistant|tool|thinking]
+aii search <query> [--agent cc|codex|cursor|pi|opencode|gemini|copilot|aider|cline|roo] [--workspace DIR] [--role user|assistant|tool|thinking]
                    [--since 7d|2026-01-01] [--limit 20] [--offset 0]
                    [--pretty|--ndjson|--json] [--agent-mode] [--max-bytes N]
 ```
@@ -156,7 +162,7 @@ Output mode resolution:
 ### `aii sessions` — browse sessions by time / agent / workspace
 
 ```
-aii sessions [--agent cc|codex|cursor|pi|opencode|gemini|copilot] [--workspace DIR]
+aii sessions [--agent cc|codex|cursor|pi|opencode|gemini|copilot|aider|cline|roo] [--workspace DIR]
              [--since 7d|2026-01-01] [--until 1d|2026-01-15]
              [--limit 50] [--offset 0] [--order asc|desc]
              [--pretty|--ndjson|--json] [--max-bytes N]
@@ -308,8 +314,8 @@ token** in the format:
 <agent_code>/<short_uid>:<ordinal>
 ```
 
-- `agent_code` — `cc` (Claude Code), `cdx` (Codex), `cur` (Cursor), `pi` (pi), `oc` (opencode), `gem` (Gemini CLI), `cop` (Copilot Chat).
-- `short_uid` — the shortest prefix of the session id, at least 8 chars, that no other indexed session shares. Most are 8 chars; Codex ids started within the same minute get a longer one. A prefix that matches more than one session is an error that lists the matches, never a guess. For opencode, the `ses_` prefix of the session id is dropped first. For pi, whose session ids start with a timestamp, the id starts at its last group, so sessions started in the same minute get different short ids; `aii show` also accepts the full session id pi prints.
+- `agent_code` — `cc` (Claude Code), `cdx` (Codex), `cur` (Cursor), `pi` (pi), `oc` (opencode), `gem` (Gemini CLI), `cop` (Copilot Chat), `aid` (Aider), `cln` (Cline), `roo` (Roo Code).
+- `short_uid` — the shortest prefix of the session id, at least 8 chars, that no other indexed session shares. Most are 8 chars; Codex ids started within the same minute get a longer one. A prefix that matches more than one session is an error that lists the matches, never a guess. For opencode, the `ses_` prefix of the session id is dropped first. For pi, whose session ids start with a timestamp, the id starts at its last group, so sessions started in the same minute get different short ids; `aii show` also accepts the full session id pi prints. Aider has no session IDs, so aii derives a hex ID from the history file path and the session's position in it.
 - `ordinal` — 0-indexed position of the message within the session.
 
 Example: `cc/32e869ac:319`. You can hand this token back to `aii show`
@@ -317,7 +323,7 @@ or the MCP `get_session` tool as the session ref — the ordinal will be
 used as the anchor if you don't pass one explicitly. Regex:
 
 ```
-^(cc|cdx|cur|pi|oc|gem|cop)/[0-9A-Za-z_-]{8,}:\d+$
+^(cc|cdx|cur|pi|oc|gem|cop|aid|cln|roo)/[0-9A-Za-z_-]{8,}:\d+$
 ```
 
 ### Token budgets
@@ -412,6 +418,7 @@ Environment variables:
 | `AII_DB`        | Override DB path. Default: `~/.local/share/aii/aii.db`. |
 | `AII_AGENT`     | Force ndjson output regardless of TTY.                   |
 | `AII_ASK_CMD`   | Default command for `aii ask` (e.g. `ollama run llama3`).|
+| `AII_AIDER_ROOTS` | Extra directories to search for `.aider.chat.history.md`, separated by `:` (`;` on Windows). |
 | `NO_COLOR`      | Disable ANSI color in pretty output.                     |
 | `FORCE_COLOR`   | Force ANSI color even when piped.                        |
 
@@ -427,6 +434,8 @@ internal/source/pi           # pi session jsonl parser
 internal/source/opencode     # opencode sqlite parser (read-only)
 internal/source/gemini       # gemini cli chat recording parser
 internal/source/copilot      # vs code copilot chat session parser
+internal/source/aider        # aider .aider.chat.history.md parser
+internal/source/cline        # cline + roo code task storage parser
 internal/indexer/        # orchestrates sources → single writer goroutine
 internal/store/          # sqlite schema, search (hybrid FTS), migrations
 internal/web/            # local HTTP UI

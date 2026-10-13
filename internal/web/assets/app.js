@@ -33,6 +33,9 @@ function agentLabel(a) {
   if (a === "opencode") return "opencode";
   if (a === "gemini") return "Gemini CLI";
   if (a === "copilot") return "Copilot Chat";
+  if (a === "aider") return "Aider";
+  if (a === "cline") return "Cline";
+  if (a === "roo_code") return "Roo Code";
   return a;
 }
 

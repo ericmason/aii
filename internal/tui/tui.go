@@ -27,7 +27,7 @@ type model struct {
 	input    textinput.Model
 	results  []store.Result
 	cursor   int
-	agent    string // "", "claude_code", "codex", "cursor", "pi", "opencode", "gemini", "copilot"
+	agent    string // "", "claude_code", "codex", "cursor", "pi", "opencode", "gemini", "copilot", "aider", "cline", "roo_code"
 	err      error
 	status   string
 	width    int
@@ -353,12 +353,18 @@ func agentShort(a string) string {
 		return "gem"
 	case "copilot":
 		return "cop"
+	case "aider":
+		return "aid"
+	case "cline":
+		return "cln"
+	case "roo_code":
+		return "roo"
 	}
 	return a
 }
 
 func nextAgent(cur string) string {
-	order := []string{"", "claude_code", "codex", "cursor", "pi", "opencode", "gemini", "copilot"}
+	order := []string{"", "claude_code", "codex", "cursor", "pi", "opencode", "gemini", "copilot", "aider", "cline", "roo_code"}
 	for i, a := range order {
 		if a == cur {
 			return order[(i+1)%len(order)]

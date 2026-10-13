@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "updated_at": "2026-10-09T08:56:10.000Z",
+  "agent": "lead",
+  "sessionId": "1760000500000_ab3cd",
+  "origin": {"source": "cli", "mode": "user", "sessionId": "1760000500000_ab3cd"},
+  "messages": [
+    {
+      "id": "msg_1",
+      "role": "user",
+      "content": [{"type": "text", "text": "<user_input mode=\"act\">Create greet.sh that prints hello, then run it.</user_input>"}],
+      "ts": 1760000500000
+    },
+    {
+      "id": "msg_2",
+      "role": "assistant",
+      "content": [
+        {"type": "text", "text": "Creating the script now."},
+        {"type": "tool_use", "id": "call_1", "name": "write_to_file", "input": {"path": "greet.sh", "content": "echo hello\n"}}
+      ],
+      "ts": 1760000505000
+    },
+    {
+      "id": "msg_3",
+      "role": "user",
+      "content": [{"type": "tool_result", "tool_use_id": "call_1", "name": "write_to_file", "content": "File written: greet.sh"}],
+      "ts": 1760000506000
+    },
+    {
+      "id": "msg_4",
+      "role": "assistant",
+      "content": [{"type": "tool_use", "id": "call_2", "name": "execute_command", "input": {"command": "sh greet.sh"}}],
+      "ts": 1760000507000
+    },
+    {
+      "id": "msg_5",
+      "role": "user",
+      "content": [{"type": "tool_result", "tool_use_id": "call_2", "name": "execute_command", "content": "exit 127: sh: not found", "is_error": true}],
+      "ts": 1760000508000
+    },
+    {
+      "id": "msg_6",
+      "role": "assistant",
+      "content": "The script is in place, but the shell isn't available here.",
+      "ts": 1760000510000
+    }
+  ]
+}
