@@ -341,6 +341,16 @@ func (s *Source) scanTask(ctx context.Context, db *store.DB, full bool, out chan
 	}
 	size := fi.Size()
 	mtimeNs := fi.ModTime().UnixNano()
+	uiPath := filepath.Join(filepath.Dir(path), uiMessagesFile)
+	if !tf.sdk {
+		// The final answer can reach ui_messages.json without the API
+		// history changing (see uiCompletion), so a change to either
+		// file triggers a rescan.
+		if ui, err := os.Stat(uiPath); err == nil {
+			size += ui.Size()
+			mtimeNs = max(mtimeNs, ui.ModTime().UnixNano())
+		}
+	}
 
 	prev, err := db.GetState(path)
 	if err != nil {
@@ -359,6 +369,12 @@ func (s *Source) scanTask(ctx context.Context, db *store.DB, full bool, out chan
 		return fmt.Errorf("parse %s: %w", path, err)
 	}
 	msgs, minTS, maxTS := renderMessages(raw)
+	if !tf.sdk {
+		if m, ok := uiCompletion(uiPath, raw); ok {
+			msgs = append(msgs, m)
+			maxTS = max(maxTS, m.TS)
+		}
+	}
 
 	// Decide whether the indexed messages are still a prefix of the file.
 	base := 0
@@ -588,6 +604,12 @@ func renderMessages(raw []apiMessage) ([]store.Message, int64, int64) {
 // "[read_file for 'main.go'] Result:".
 var legacyToolResult = regexp.MustCompile(`^\[[a-z_]+(?: for [^\]]*)?\] Result:`)
 
+// systemReminderPrefix starts the reminders the Cline SDK agent runtime
+// adds as user turns, such as "[SYSTEM] This run is not complete until
+// you call one of these terminal completion tools" (cline/cline
+// sdk/packages/agents/src/agent-runtime.ts).
+const systemReminderPrefix = "[SYSTEM] "
+
 // addText routes a text block: user text is cleaned of the context Cline
 // appends, and user text that is really a tool result goes to "tool".
 func addText(add func(role, text string), role, text string) {
@@ -596,6 +618,9 @@ func addText(add func(role, text string), role, text string) {
 		return
 	}
 	trimmed := strings.TrimSpace(text)
+	if strings.HasPrefix(trimmed, systemReminderPrefix) {
+		return // injected by the agent runtime, not typed by the user
+	}
 	if legacyToolResult.MatchString(trimmed) {
 		add("tool", "[tool_result] "+truncateBytes(cleanUserText(trimmed), maxToolOutBytes))
 		return
@@ -603,8 +628,9 @@ func addText(add func(role, text string), role, text string) {
 	add("user", cleanUserText(text))
 }
 
-// toolResultText flattens a tool_result content field (a string or an
-// array of text and image blocks).
+// toolResultText flattens a tool_result content field: a string, an
+// array of text and image blocks, or (Cline SDK tools such as read_files
+// and run_commands) an array of {query, result, error, success} objects.
 func toolResultText(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -613,17 +639,55 @@ func toolResultText(raw json.RawMessage) string {
 	if json.Unmarshal(raw, &str) == nil {
 		return strings.TrimSpace(str)
 	}
-	var blocks []contentBlock
-	if json.Unmarshal(raw, &blocks) != nil {
+	var items []json.RawMessage
+	if json.Unmarshal(raw, &items) != nil {
 		return ""
 	}
 	var parts []string
-	for _, b := range blocks {
-		if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
+	for _, it := range items {
+		var b struct {
+			Type    string          `json:"type"`
+			Text    string          `json:"text"`
+			Query   string          `json:"query"`
+			Result  json.RawMessage `json:"result"`
+			Error   string          `json:"error"`
+			Success *bool           `json:"success"`
+		}
+		if json.Unmarshal(it, &b) != nil {
+			continue
+		}
+		switch {
+		case b.Type == "text":
 			parts = append(parts, strings.TrimSpace(b.Text))
+		case b.Type != "":
+			// Images and other binary blocks carry no searchable text.
+		case b.Query != "" || len(b.Result) > 0 || b.Error != "":
+			var lines []string
+			if b.Query != "" {
+				lines = append(lines, b.Query)
+			}
+			var res string
+			if json.Unmarshal(b.Result, &res) != nil {
+				res = compactJSON(b.Result)
+			}
+			if strings.TrimSpace(res) != "" {
+				lines = append(lines, strings.TrimSpace(res))
+			}
+			if b.Error != "" {
+				lines = append(lines, "[error] "+strings.TrimSpace(b.Error))
+			}
+			parts = append(parts, strings.Join(lines, "\n"))
+		default:
+			parts = append(parts, compactJSON(it))
 		}
 	}
-	return strings.Join(parts, "\n")
+	var out []string
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 var (
@@ -664,6 +728,48 @@ func workspaceFromEnvironment(raw []apiMessage) string {
 		}
 	}
 	return ""
+}
+
+// uiCompletion returns the task's final answer as an assistant message
+// when it is missing from the API history. The Roo CLI in --print mode
+// exits before saving the last assistant turn to
+// api_conversation_history.json, so its attempt_completion result exists
+// only as a "completion_result" entry in ui_messages.json. It is used only
+// when the API history doesn't already end with an assistant turn and the
+// completion is newer than every API message.
+func uiCompletion(path string, raw []apiMessage) (store.Message, bool) {
+	var lastTS int64
+	for _, m := range raw {
+		lastTS = max(lastTS, m.TS)
+	}
+	if n := len(raw); n > 0 && strings.EqualFold(raw[n-1].Role, "assistant") {
+		return store.Message{}, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return store.Message{}, false
+	}
+	var ui []struct {
+		TS      int64  `json:"ts"`
+		Type    string `json:"type"`
+		Say     string `json:"say"`
+		Text    string `json:"text"`
+		Partial bool   `json:"partial"`
+	}
+	if json.Unmarshal(data, &ui) != nil {
+		return store.Message{}, false
+	}
+	for i := len(ui) - 1; i >= 0; i-- {
+		u := ui[i]
+		if u.Type != "say" || u.Say != "completion_result" || u.Partial {
+			continue
+		}
+		if u.TS <= lastTS || strings.TrimSpace(u.Text) == "" {
+			return store.Message{}, false
+		}
+		return store.Message{Role: "assistant", TS: u.TS / 1000, Content: strings.TrimSpace(u.Text)}, true
+	}
+	return store.Message{}, false
 }
 
 // uiMessageRange returns the earliest and latest ts in ui_messages.json.

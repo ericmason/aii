@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "session_id": "1791928474119_fa25n",
+  "source": "cli",
+  "pid": 56,
+  "started_at": "2026-10-13T21:54:34.123Z",
+  "ended_at": "2026-10-13T21:54:39.034Z",
+  "exit_code": 0,
+  "status": "completed",
+  "interactive": false,
+  "provider": "openrouter",
+  "model": "openai/gpt-4.1-mini",
+  "cwd": "/data/proj",
+  "workspace_root": "/data/proj",
+  "enable_tools": true,
+  "enable_spawn": false,
+  "enable_teams": false,
+  "prompt": "Add a second line to greet.sh that prints 'goodbye', then run it again.",
+  "metadata": {
+    "sessionHistoryOrigin": {
+      "mode": "user",
+      "version": "3.0.71"
+    },
+    "title": "Add a second line to greet.sh that prints 'goodbye', then run it again.",
+    "totalCost": 0.0030364000000000003,
+    "aggregatedAgentsCost": 0.0030364000000000003,
+    "usage": {
+      "inputTokens": 10651,
+      "outputTokens": 195,
+      "cacheReadTokens": 5120,
+      "cacheWriteTokens": 0,
+      "totalCost": 0.0030364000000000003
+    },
+    "aggregateUsage": {
+      "inputTokens": 10651,
+      "outputTokens": 195,
+      "cacheReadTokens": 5120,
+      "cacheWriteTokens": 0,
+      "totalCost": 0.0030364000000000003
+    }
+  },
+  "messages_path": "/data/.cline/data/sessions/1791928474119_fa25n/1791928474119_fa25n.messages.json"
+}

@@ -384,6 +384,97 @@ func TestShortIDsAreDistinctAndFullIDsResolve(t *testing.T) {
 	}
 }
 
+// The recorded fixtures are trimmed copies of real Cline CLI 3.0.71 and
+// Roo CLI 0.1.17 runs (scripts/agent-fixtures/) that hold only the test
+// prompts.
+func TestRecordedClineCLI(t *testing.T) {
+	root := copyTree(t, filepath.Join("recorded", "cline"))
+	db := openDB(t)
+	run(t, db, false, &Source{agent: clineAgent, Roots: []string{root}})
+
+	s, rs := sessionRows(t, db, "cline", "1791928474119_fa25n")
+	if got := roles(rs); got != "user,tool,tool,tool,tool,tool,tool,tool,tool" {
+		t.Errorf("roles = %s", got)
+	}
+	for _, r := range rs {
+		// The runtime's "[SYSTEM] This run is not complete..." reminder
+		// is not something the user typed.
+		if strings.Contains(r.Content, "[SYSTEM]") {
+			t.Errorf("runtime reminder indexed as %s: %q", r.Role, r.Content)
+		}
+	}
+	// read_files and run_commands return arrays of {query, result}.
+	if want := "[tool_result] /data/proj/greet.sh:1-10\n1 | #!/bin/sh"; !strings.HasPrefix(rs[2].Content, want) {
+		t.Errorf("read_files result = %q", rs[2].Content)
+	}
+	if want := "[tool_result] sh /data/proj/greet.sh\nhello from the fixture\ngoodbye"; rs[6].Content != want {
+		t.Errorf("run_commands result = %q", rs[6].Content)
+	}
+	if s.Workspace != "/data/proj" || s.Title != "Add a second line to greet.sh that prints 'goodbye', then run it again." {
+		t.Errorf("metadata = %q, %q", s.Workspace, s.Title)
+	}
+	if n := count(t, db, `SELECT COUNT(*) FROM sessions`); n != 2 {
+		t.Errorf("sessions = %d, want 2", n)
+	}
+}
+
+func TestRecordedRooCLI(t *testing.T) {
+	root := copyTree(t, filepath.Join("recorded", "roo"))
+	db := openDB(t)
+	src := NewRooCode()
+	src.Roots = []string{root}
+	run(t, db, false, src)
+
+	const id = "01a13743-6f0d-704b-bf91-c26f683f4a14"
+	s, rs := sessionRows(t, db, "roo_code", id)
+	// The Roo CLI exits before saving the final assistant turn to
+	// api_conversation_history.json; its answer is only in
+	// ui_messages.json as a completion_result.
+	if got := roles(rs); got != "user,tool,tool,tool,tool,assistant" {
+		t.Fatalf("roles = %s", got)
+	}
+	if !strings.HasPrefix(rs[5].Content, "Created the file `greet.sh`") {
+		t.Errorf("final answer = %q", rs[5].Content)
+	}
+	if s.Workspace != "/data/proj" || s.EndedAt <= s.StartedAt {
+		t.Errorf("metadata = %q %d..%d", s.Workspace, s.StartedAt, s.EndedAt)
+	}
+
+	// Rerunning adds nothing.
+	if st := run(t, db, false, src); st.MessagesAdded != 0 {
+		t.Errorf("rerun added %d messages", st.MessagesAdded)
+	}
+}
+
+func TestCompletionResultArrivingLaterIsIndexed(t *testing.T) {
+	root := copyTree(t, filepath.Join("recorded", "roo"))
+	dir := filepath.Join(root, "tasks", "01a13743-6f0d-704b-bf91-c26f683f4a14")
+	ui := filepath.Join(dir, uiMessagesFile)
+	full, err := os.ReadFile(ui)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// First scan: the task is still running, so ui_messages.json has no
+	// completion_result yet.
+	if err := os.WriteFile(ui, []byte("[]"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	db := openDB(t)
+	src := NewRooCode()
+	src.Roots = []string{root}
+	run(t, db, false, src)
+
+	// Only ui_messages.json changes when the task completes.
+	if err := os.WriteFile(ui, full, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(time.Minute)
+	os.Chtimes(ui, future, future)
+	if st := run(t, db, false, src); st.MessagesAdded != 1 {
+		t.Errorf("completion added %d messages, want 1", st.MessagesAdded)
+	}
+}
+
 func TestIDTime(t *testing.T) {
 	cases := map[string]int64{
 		"1760000000000":                        1760000000,

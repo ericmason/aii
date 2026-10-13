@@ -258,6 +258,45 @@ func TestReadRangeStopsAtStatSize(t *testing.T) {
 	}
 }
 
+// testdata/recorded.md is the history file from a real Aider 0.86.2 run
+// (scripts/agent-fixtures/aider-run.sh), holding only the test prompts.
+func TestRecordedHistory(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "recorded.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHarness(t)
+	h.write(data)
+	h.index(false)
+	if h.sessions() != 2 || h.messages() != 8 {
+		t.Fatalf("%d sessions, %d messages", h.sessions(), h.messages())
+	}
+	rows, err := h.db.Query(`
+		SELECT s.title, group_concat(m.role, ',') FROM sessions s
+		JOIN (SELECT * FROM messages ORDER BY ordinal) m ON m.session_id = s.id
+		GROUP BY s.id ORDER BY s.started_at, s.id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	want := []string{
+		"Add a subtract(a, b) function to calc.py.|tool,user,assistant,tool",
+		"Add a one-line docstring to every function in calc.py.|tool,user,assistant,tool",
+	}
+	var got []string
+	for rows.Next() {
+		var title, roles string
+		rows.Scan(&title, &roles)
+		got = append(got, title+"|"+roles)
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("sessions:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if st := h.index(false); st.MessagesAdded != 0 {
+		t.Errorf("rerun added %d messages", st.MessagesAdded)
+	}
+}
+
 func TestDiscoversKnownWorkspaces(t *testing.T) {
 	h := newHarness(t)
 	h.src.Roots = []string{} // no configured roots

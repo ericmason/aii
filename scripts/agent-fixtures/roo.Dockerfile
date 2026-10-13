@@ -9,7 +9,7 @@ FROM node:22-slim
 
 ARG ROO_VERSION=0.1.17
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates \
+ && apt-get install -y --no-install-recommends curl ca-certificates procps \
  && rm -rf /var/lib/apt/lists/* \
  && curl -fsSL https://raw.githubusercontent.com/RooCodeInc/Roo-Code/main/apps/cli/install.sh \
     | ROO_VERSION="${ROO_VERSION}" ROO_INSTALL_DIR=/opt/roo ROO_BIN_DIR=/usr/local/bin sh
