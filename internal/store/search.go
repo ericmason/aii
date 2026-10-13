@@ -260,64 +260,60 @@ func (d *DB) RangeRows(sessionID int64, fromOrdinal, toOrdinal int) ([]Row, erro
 // Quoted phrases survive as phrases; bare words become prefix terms so
 // typing "auth" also matches "authorize", "authentication", etc. Non-
 // alphanumeric runes in bare words are stripped — this keeps special
-// FTS5 syntax (AND/OR/NEAR/parens/colons) from detonating on user input.
+// FTS5 syntax (parens/colons/stars) from detonating on user input.
+// Uppercase AND, OR, and NOT between two terms pass through as boolean
+// operators; anywhere else they're dropped.
 func normalizeMatch(q string) string {
-	q = strings.TrimSpace(q)
-	if q == "" {
+	out := joinMatch(tokenizeMatch(q), func(it matchItem) string {
+		switch {
+		case it.text == "":
+			return ""
+		case it.phrase:
+			return `"` + it.text + `"`
+		case ftsKeywords[it.text]:
+			// A bare NEAR* or OR* is a syntax error; quoting makes it a term.
+			return `"` + it.text + `"*`
+		default:
+			return it.text + "*"
+		}
+	})
+	if out == "" {
 		return `""`
 	}
-
-	var out []string
-	in := []rune(q)
-	for i := 0; i < len(in); i++ {
-		c := in[i]
-		if c == '"' {
-			j := i + 1
-			for j < len(in) && in[j] != '"' {
-				j++
-			}
-			phrase := sanitizePhrase(string(in[i+1 : j]))
-			if phrase != "" {
-				out = append(out, `"`+phrase+`"`)
-			}
-			if j < len(in) {
-				i = j
-			} else {
-				i = len(in)
-			}
-			continue
-		}
-		if c == ' ' || c == '\t' {
-			continue
-		}
-		j := i
-		for j < len(in) && !isSpace(in[j]) {
-			j++
-		}
-		tok := sanitizeToken(string(in[i:j]))
-		if tok != "" {
-			out = append(out, tok+"*")
-		}
-		i = j - 1
-	}
-	if len(out) == 0 {
-		return `""`
-	}
-	return strings.Join(out, " ")
+	return out
 }
 
 // normalizeMatchTrigram builds a MATCH string for the trigram FTS table.
 // Trigram tokenization requires ≥3-char substrings and doesn't support
 // prefix stars. Each bare token and each quoted phrase becomes a quoted
-// phrase; tokens shorter than 3 chars are dropped. Returns "" when no
-// usable tokens remain — callers then skip the trigram branch entirely.
+// phrase; tokens shorter than 3 chars are dropped. Boolean operators
+// follow the same rules as normalizeMatch. Returns "" when no usable
+// tokens remain — callers then skip the trigram branch entirely.
 func normalizeMatchTrigram(q string) string {
-	q = strings.TrimSpace(q)
-	if q == "" {
-		return ""
-	}
-	var out []string
-	in := []rune(q)
+	return joinMatch(tokenizeMatch(q), func(it matchItem) string {
+		if len([]rune(it.text)) < 3 {
+			return ""
+		}
+		return `"` + it.text + `"`
+	})
+}
+
+// matchItem is one piece of a user query: a bare word, a quoted phrase,
+// or a boolean operator (AND, OR, NOT).
+type matchItem struct {
+	text   string
+	phrase bool
+	op     bool
+}
+
+// ftsKeywords are the bare words FTS5 parses as syntax rather than terms.
+var ftsKeywords = map[string]bool{"AND": true, "OR": true, "NOT": true, "NEAR": true}
+
+// tokenizeMatch splits a query into sanitized words, quoted phrases, and
+// operators. An unterminated quote runs to the end of the query.
+func tokenizeMatch(q string) []matchItem {
+	var items []matchItem
+	in := []rune(strings.TrimSpace(q))
 	for i := 0; i < len(in); i++ {
 		c := in[i]
 		if c == '"' {
@@ -325,15 +321,8 @@ func normalizeMatchTrigram(q string) string {
 			for j < len(in) && in[j] != '"' {
 				j++
 			}
-			phrase := sanitizePhrase(string(in[i+1 : j]))
-			if len([]rune(phrase)) >= 3 {
-				out = append(out, `"`+phrase+`"`)
-			}
-			if j < len(in) {
-				i = j
-			} else {
-				i = len(in)
-			}
+			items = append(items, matchItem{text: sanitizePhrase(string(in[i+1 : j])), phrase: true})
+			i = j
 			continue
 		}
 		if isSpace(c) {
@@ -343,11 +332,40 @@ func normalizeMatchTrigram(q string) string {
 		for j < len(in) && !isSpace(in[j]) {
 			j++
 		}
-		tok := sanitizeToken(string(in[i:j]))
-		if len([]rune(tok)) >= 3 {
-			out = append(out, `"`+tok+`"`)
+		raw := string(in[i:j])
+		switch raw {
+		case "AND", "OR", "NOT":
+			items = append(items, matchItem{text: raw, op: true})
+		default:
+			items = append(items, matchItem{text: sanitizeToken(raw)})
 		}
 		i = j - 1
+	}
+	return items
+}
+
+// joinMatch renders items into a MATCH expression. render returns "" to
+// drop a term. An operator is kept only when a kept term sits on each
+// side of it; of several operators in a row, the last one wins.
+func joinMatch(items []matchItem, render func(matchItem) string) string {
+	var out []string
+	pendingOp := ""
+	for _, it := range items {
+		if it.op {
+			if len(out) > 0 {
+				pendingOp = it.text
+			}
+			continue
+		}
+		term := render(it)
+		if term == "" {
+			continue
+		}
+		if pendingOp != "" {
+			out = append(out, pendingOp)
+			pendingOp = ""
+		}
+		out = append(out, term)
 	}
 	return strings.Join(out, " ")
 }

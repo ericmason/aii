@@ -14,7 +14,19 @@ func TestNormalizeMatch(t *testing.T) {
 		{`auth "exact phrase" token`, `auth* "exact phrase" token*`},
 		// FTS operator characters in bare words must not leak into the MATCH
 		// expression — sanitizeToken strips non-alphanumerics.
-		{`AND OR NEAR (foo)`, `AND* OR* NEAR* foo*`},
+		{`(AND) NEAR (foo)`, `"AND"* "NEAR"* foo*`},
+		// Uppercase AND/OR/NOT between terms are boolean operators.
+		{`download OR extract OR app`, `download* OR extract* OR app*`},
+		{`auth AND token NOT oauth`, `auth* AND token* NOT oauth*`},
+		{`auth OR "exact phrase"`, `auth* OR "exact phrase"`},
+		// Operators without a term on each side are dropped.
+		{`OR auth`, `auth*`},
+		{`auth OR`, `auth*`},
+		{`auth OR AND token`, `auth* AND token*`},
+		{`NOT`, `""`},
+		{`auth OR !!!`, `auth*`},
+		// Lowercase operator words are ordinary search terms.
+		{`this or that`, `this* or* that*`},
 		{`semi:colon`, `semicolon*`},
 		{`snake_case`, `snake_case*`},
 		{`"un"closed`, `"un" closed*`},
@@ -49,6 +61,11 @@ func TestNormalizeMatchTrigram(t *testing.T) {
 		{`a longerword`, `"longerword"`},
 		// FTS operators sanitized like bare words.
 		{`(AND)`, `"AND"`},
+		// Operators pass through; dropping a short term drops its operator.
+		{`download OR app`, `"download" OR "app"`},
+		{`ab OR download`, `"download"`},
+		{`download OR ab`, `"download"`},
+		{`download NOT scratch`, `"download" NOT "scratch"`},
 	}
 	for _, c := range cases {
 		if got := normalizeMatchTrigram(c.in); got != c.want {
