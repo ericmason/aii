@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -136,6 +137,66 @@ func TestSearch_BooleanOperators(t *testing.T) {
 	}
 	if got := sessions("NOT download"); len(got) != 0 {
 		t.Errorf("leading NOT should match nothing, got %v", got)
+	}
+}
+
+// A message matched by both indexes counts once, and every excerpt carries
+// a highlighted snippet from the index that scored it.
+func TestSearch_SnippetsAndMatchCount(t *testing.T) {
+	db := openTestDB(t)
+	sid := seed(t, db, &Session{
+		Agent: "claudecode", UID: "sess-snip", Workspace: "repo",
+		Title: "snippets", StartedAt: 100, EndedAt: 200,
+		SourcePath: "/tmp/snip.jsonl",
+	}, []Message{
+		// porter (auth* -> authentication) and trigram ("auth") both match
+		{Ordinal: 1, Role: "user", TS: 100, Content: "The authentication flow is broken."},
+		// trigram only: porter sees the single token "oauthtoken"
+		{Ordinal: 2, Role: "assistant", TS: 110, Content: "Refresh the OAuthToken first."},
+		{Ordinal: 3, Role: "user", TS: 120, Content: "Unrelated text."},
+	})
+	// Many other sessions so the snippet pass has to pick its rows out of
+	// a wider id range.
+	for i := 0; i < 5; i++ {
+		seed(t, db, &Session{
+			Agent: "codex", UID: fmt.Sprintf("other-%d", i), Workspace: "repo",
+			Title: "other", StartedAt: int64(300 + i), EndedAt: int64(400 + i),
+			SourcePath: fmt.Sprintf("/tmp/other-%d.jsonl", i),
+		}, []Message{
+			{Ordinal: 1, Role: "user", TS: int64(300 + i), Content: "auth handler mentioned once, with a lot of other words around it"},
+		})
+	}
+
+	results, err := db.Search(Query{Text: "auth", Limit: 10})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	var got *Result
+	for i := range results {
+		if results[i].SessionID == sid {
+			got = &results[i]
+		}
+		for _, ex := range results[i].Excerpts {
+			if !strings.Contains(strings.ToLower(ex.Snippet), "«auth") {
+				t.Errorf("session %d ordinal %d: snippet %q lacks a highlighted match", results[i].SessionID, ex.Ordinal, ex.Snippet)
+			}
+		}
+	}
+	if got == nil {
+		t.Fatalf("session %d missing from %+v", sid, results)
+	}
+	if got.MatchCount != 2 {
+		t.Errorf("match_count: want 2 (one per message), got %d", got.MatchCount)
+	}
+	if len(got.Excerpts) != 2 {
+		t.Fatalf("want 2 excerpts, got %+v", got.Excerpts)
+	}
+	ordinals := map[int]bool{}
+	for _, ex := range got.Excerpts {
+		ordinals[ex.Ordinal] = true
+	}
+	if !ordinals[1] || !ordinals[2] {
+		t.Errorf("want excerpts for ordinals 1 and 2, got %+v", got.Excerpts)
 	}
 }
 
