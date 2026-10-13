@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -76,7 +75,7 @@ type row struct {
 // sessionRows looks a task up by its task ID.
 func sessionRows(t *testing.T, db *store.DB, agent, uid string) (store.Session, []row) {
 	t.Helper()
-	s, err := db.SessionByUID(agent, SessionUID(uid))
+	s, err := db.SessionByUID(agent, uid)
 	if err != nil || s == nil {
 		t.Fatalf("session %s/%s: %v", agent, uid, err)
 	}
@@ -332,55 +331,58 @@ func TestDefaultRoots(t *testing.T) {
 	}
 }
 
-func TestShortIDsAreDistinctAndFullIDsResolve(t *testing.T) {
-	// Tasks started a few seconds apart share their first 8 characters.
-	ids := []string{
-		"1760000000000", "1760000004000", "1760000009999",
-		"1760000500000_ab3cd", "1760000500000_xy9zz",
-		"019a1b2c-3d4e-7f60-8a9b-0c1d2e3f4a5b", "019a1b2c-3d4f-7a00-9b1c-112233445566",
-	}
-	short := map[string]string{}
-	for _, id := range ids {
-		uid := SessionUID(id)
-		if !regexp.MustCompile(`^[0-9a-f]{8}-`).MatchString(uid) || !strings.HasSuffix(uid, "-"+id) {
-			t.Fatalf("SessionUID(%q) = %q", id, uid)
-		}
-		if prev, ok := short[uid[:8]]; ok {
-			t.Errorf("%q and %q share short ID %s", prev, id, uid[:8])
-		}
-		short[uid[:8]] = id
-	}
-
-	// Index the same Roo Code task under three IDs that share a timestamp
-	// prefix, then look each one up by short ID and by full task ID.
-	root := filepath.Join(t.TempDir(), "roo")
-	src := filepath.Join("testdata", "roo", "tasks", rooTask, apiHistoryFile)
-	data, err := os.ReadFile(src)
+// Task IDs start with a timestamp, so tasks started close together share
+// their first 8 or more characters. Their cite tokens (store.CiteUID)
+// must still differ, and each token and full task ID must resolve to its
+// own task.
+func TestCloseTasksGetDistinctCiteTokens(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "roo", "tasks", rooTask, apiHistoryFile))
 	if err != nil {
 		t.Fatal(err)
 	}
-	rooIDs := []string{rooTask, "019a1b2c-3d4e-7f61-8000-000000000001", "019a1b2c-3d4f-7000-8000-000000000002"}
-	for _, id := range rooIDs {
-		dir := filepath.Join(root, "tasks", id)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, apiHistoryFile), data, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	db := openDB(t)
-	s := NewRooCode()
-	s.Roots = []string{root}
-	run(t, db, false, s)
-	for _, id := range rooIDs {
-		uid := SessionUID(id)
-		for _, ref := range []string{uid[:8], id, uid} {
-			got, err := db.SessionByUIDAny(ref)
-			if err != nil || got == nil || got.UID != uid {
-				t.Errorf("lookup %q: got %+v, %v; want %s", ref, got, err, uid)
+	writeTasks := func(root string, ids []string) {
+		for _, id := range ids {
+			dir := filepath.Join(root, "tasks", id)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, apiHistoryFile), data, 0o644); err != nil {
+				t.Fatal(err)
 			}
 		}
+	}
+	tmp := t.TempDir()
+	clineRoot, rooRoot := filepath.Join(tmp, "cline"), filepath.Join(tmp, "roo")
+	// Cline uses Date.now(): these three start 1 ms and 1 s apart.
+	clineIDs := []string{"1760000000000", "1760000000001", "1760000001000"}
+	// Roo Code uses UUIDv7: these share their 48-bit millisecond timestamp.
+	rooIDs := []string{"019a1b2c-3d4e-7f60-8a9b-0c1d2e3f4a5b", "019a1b2c-3d4e-7f61-8000-000000000001"}
+	writeTasks(clineRoot, clineIDs)
+	writeTasks(rooRoot, rooIDs)
+
+	db := openDB(t)
+	c := New()
+	c.Roots = []string{clineRoot}
+	r := NewRooCode()
+	r.Roots = []string{rooRoot}
+	run(t, db, false, c, r)
+
+	seen := map[string]string{}
+	for _, id := range append(append([]string{}, clineIDs...), rooIDs...) {
+		cite := db.CiteUID(id)
+		if prev, ok := seen[cite]; ok {
+			t.Errorf("%q and %q share cite token %q", prev, id, cite)
+		}
+		seen[cite] = id
+		for _, ref := range []string{cite, id} {
+			got, err := db.SessionByUIDAny(ref)
+			if err != nil || got == nil || got.UID != id {
+				t.Errorf("lookup %q: got %+v, %v; want %s", ref, got, err, id)
+			}
+		}
+	}
+	if got := db.CiteUID("1760000000000"); got != "1760000000000" {
+		t.Errorf("CiteUID(1760000000000) = %q; a 1 ms neighbor leaves only the full id unique", got)
 	}
 }
 

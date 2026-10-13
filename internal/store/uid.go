@@ -1,9 +1,7 @@
 package store
 
 import (
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"fmt"
 	"strings"
 )
@@ -56,15 +54,6 @@ func foldUID(s string) string {
 	return string(b)
 }
 
-// HashedUID returns id with the first 8 hex digits of its SHA-256 and a
-// dash in front. Sources whose ids start with a timestamp store this
-// form so their ids differ from the first character; SessionByRef
-// resolves the bare id to it.
-func HashedUID(id string) string {
-	sum := sha256.Sum256([]byte(id))
-	return hex.EncodeToString(sum[:4]) + "-" + id
-}
-
 // prefixUpperBound returns a string that sorts after every string that
 // starts with p, so `uid >= p AND uid < bound` is an index-friendly
 // prefix match without LIKE wildcards.
@@ -98,8 +87,7 @@ func (d *DB) SessionByUIDAny(uid string) (*Session, error) {
 
 // SessionByRef finds a session by full uid or uid prefix. It tries each
 // match rule in order of preference (exact uid, exact uid ignoring
-// ASCII case, a task ID stored as HashedUID(ref), uid prefix ignoring
-// ASCII case) and stops at the first
+// ASCII case, uid prefix ignoring ASCII case) and stops at the first
 // rule that matches anything. When agent is set, it first looks only at
 // that agent's sessions, then falls back to all agents if that finds
 // nothing. It returns (nil, nil) when nothing matches and an
@@ -123,9 +111,6 @@ func (d *DB) sessionByRef(agent, ref string) (*Session, error) {
 	}{
 		{`session_uid = ?`, []any{ref}},
 		{`lower(session_uid) = ?`, []any{fold}},
-		// A Cline or Roo Code task ID, stored as HashedUID(id). The hash
-		// covers the id as typed, so hash both the ref and its fold.
-		{`lower(session_uid) IN (?, ?)`, []any{foldUID(HashedUID(ref)), foldUID(HashedUID(fold))}},
 		{`lower(session_uid) >= ? AND lower(session_uid) < ?`, []any{fold, prefixUpperBound(fold)}},
 	}
 	var matches []Session

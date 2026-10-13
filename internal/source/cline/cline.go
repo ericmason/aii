@@ -426,7 +426,7 @@ func (s *Source) scanTask(ctx context.Context, db *store.DB, full bool, out chan
 	b := source.Batch{
 		Session: store.Session{
 			Agent:         s.agent,
-			UID:           SessionUID(tf.id),
+			UID:           tf.id,
 			Workspace:     workspace,
 			Title:         truncateRunes(firstLine(title), maxTitleRunes),
 			StartedAt:     startedAt,
@@ -845,14 +845,6 @@ func firstUserText(msgs []store.Message) string {
 	}
 	return ""
 }
-
-// SessionUID returns the session_uid aii stores for a Cline or Roo Code
-// task ID (see store.HashedUID). Task IDs start with a timestamp
-// (Date.now() for Cline, UUIDv7 for Roo Code), so their own first 8
-// characters repeat for tasks started within a minute or two of each
-// other. The hash keeps cite tokens at 8 characters; the trailing task
-// ID keeps lookups by the full task ID working (see store.SessionByRef).
-func SessionUID(id string) string { return store.HashedUID(id) }
 
 // firstLine keeps titles on one line.
 func firstLine(s string) string {
