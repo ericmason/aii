@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -72,9 +73,10 @@ type row struct {
 	Content string
 }
 
+// sessionRows looks a task up by its task ID.
 func sessionRows(t *testing.T, db *store.DB, agent, uid string) (store.Session, []row) {
 	t.Helper()
-	s, err := db.SessionByUID(agent, uid)
+	s, err := db.SessionByUID(agent, SessionUID(uid))
 	if err != nil || s == nil {
 		t.Fatalf("session %s/%s: %v", agent, uid, err)
 	}
@@ -327,6 +329,58 @@ func TestDefaultRoots(t *testing.T) {
 	t.Setenv("CLINE_DIR", filepath.Join(home, "alt"))
 	if got := New().roots()[0]; got != filepath.Join(home, "alt", "data") {
 		t.Errorf("CLINE_DIR root = %q", got)
+	}
+}
+
+func TestShortIDsAreDistinctAndFullIDsResolve(t *testing.T) {
+	// Tasks started a few seconds apart share their first 8 characters.
+	ids := []string{
+		"1760000000000", "1760000004000", "1760000009999",
+		"1760000500000_ab3cd", "1760000500000_xy9zz",
+		"019a1b2c-3d4e-7f60-8a9b-0c1d2e3f4a5b", "019a1b2c-3d4f-7a00-9b1c-112233445566",
+	}
+	short := map[string]string{}
+	for _, id := range ids {
+		uid := SessionUID(id)
+		if !regexp.MustCompile(`^[0-9a-f]{8}-`).MatchString(uid) || !strings.HasSuffix(uid, "-"+id) {
+			t.Fatalf("SessionUID(%q) = %q", id, uid)
+		}
+		if prev, ok := short[uid[:8]]; ok {
+			t.Errorf("%q and %q share short ID %s", prev, id, uid[:8])
+		}
+		short[uid[:8]] = id
+	}
+
+	// Index the same Roo Code task under three IDs that share a timestamp
+	// prefix, then look each one up by short ID and by full task ID.
+	root := filepath.Join(t.TempDir(), "roo")
+	src := filepath.Join("testdata", "roo", "tasks", rooTask, apiHistoryFile)
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rooIDs := []string{rooTask, "019a1b2c-3d4e-7f61-8000-000000000001", "019a1b2c-3d4f-7000-8000-000000000002"}
+	for _, id := range rooIDs {
+		dir := filepath.Join(root, "tasks", id)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, apiHistoryFile), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db := openDB(t)
+	s := NewRooCode()
+	s.Roots = []string{root}
+	run(t, db, false, s)
+	for _, id := range rooIDs {
+		uid := SessionUID(id)
+		for _, ref := range []string{uid[:8], id, uid} {
+			got, err := db.SessionByUIDAny(ref)
+			if err != nil || got == nil || got.UID != uid {
+				t.Errorf("lookup %q: got %+v, %v; want %s", ref, got, err, uid)
+			}
+		}
 	}
 }
 

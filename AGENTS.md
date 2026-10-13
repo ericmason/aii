@@ -70,12 +70,12 @@ state across lines.
 ```
 
 - `agent_code` ∈ {`cc`, `cdx`, `cur`, `pi`, `oc`, `gem`, `cop`, `aid`, `cln`, `roo`} (Claude Code, Codex, Cursor, pi, opencode, Gemini CLI, Copilot Chat, Aider, Cline, Roo Code)
-- `short_uid` = shortest unique prefix, at least 8 chars, of the stored session uid (`store.CiteUID`). For opencode the stored uid drops the `ses_` prefix; for pi it starts with the id's last group, because pi's UUIDv7 ids start with a timestamp.
+- `short_uid` = shortest unique prefix, at least 8 chars, of the stored session uid (`store.CiteUID`). For opencode the stored uid drops the `ses_` prefix; for pi it starts with the id's last group, because pi's UUIDv7 ids start with a timestamp. For Cline and Roo Code the stored uid is `<8 hex>-<task id>` (`store.HashedUID`), and the full task ID also works as a session ref.
 - `ordinal` = 0-indexed position within the session
 
 Regex: `^(cc|cdx|cur|pi|oc|gem|cop|aid|cln|roo)/[0-9A-Za-z_-]{8,}:\d+$`
 
-Lookup (`store.SessionByRef`) prefers an exact id, then an exact id ignoring ASCII case, then an id prefix ignoring ASCII case. The token's agent code scopes the lookup first, so two agents' sessions that share an id stay reachable. A ref that still matches several sessions returns `*store.AmbiguousUIDError`; never pick one of its candidates.
+Lookup (`store.SessionByRef`) prefers an exact id, then an exact id ignoring ASCII case, then a Cline or Roo Code task ID in its stored `<8 hex>-<task id>` form, then an id prefix ignoring ASCII case. The token's agent code scopes the lookup first, so two agents' sessions that share an id stay reachable. A ref that still matches several sessions returns `*store.AmbiguousUIDError`; never pick one of its candidates.
 
 **When you cite a claim to the user, use this token.** It's
 copy-pasteable, unambiguous, and round-trips to `get_session` /

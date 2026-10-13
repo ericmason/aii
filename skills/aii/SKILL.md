@@ -47,7 +47,7 @@ Every excerpt and message carries a stable token:
 ```
 
 - `agent_code` ∈ {`cc` = Claude Code, `cdx` = Codex, `cur` = Cursor, `pi` = pi, `oc` = opencode, `gem` = Gemini CLI, `cop` = Copilot Chat, `aid` = Aider, `cln` = Cline, `roo` = Roo Code}
-- `short_uid` = shortest prefix of the session id, at least 8 chars, that no other session shares; copy it whole
+- `short_uid` = shortest prefix of the session id, at least 8 chars, that no other session shares; copy it whole (for Cline and Roo Code, the full task ID also works as a session ref)
 - `ordinal` = 0-indexed position within the session
 - Regex: `^(cc|cdx|cur|pi|oc|gem|cop|aid|cln|roo)/[0-9A-Za-z_-]{8,}:\d+$`
 - Keep the agent code when you pass a token back: it picks the right session when two agents share an id. Ids match without regard to case.

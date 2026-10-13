@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -525,5 +526,49 @@ func TestSearch_SnippetsAcrossBatches(t *testing.T) {
 				t.Errorf("session %d ordinal %d: snippet %q lacks a highlighted match", r.SessionID, ex.Ordinal, ex.Snippet)
 			}
 		}
+	}
+}
+
+func TestSessionByUIDAny_Preference(t *testing.T) {
+	db := openTestDB(t)
+	hashedA := HashedUID("1760000000000")
+	hashedB := HashedUID("1760000000001")
+	hashedC := HashedUID("task_abc")
+	for i, s := range []Session{
+		{Agent: "cline", UID: "1760000000000"},
+		{Agent: "cline", UID: hashedA},
+		{Agent: "cline", UID: hashedB},
+		{Agent: "cline", UID: "1760000000001-other"},
+		{Agent: "cline", UID: "17600000aa-other"},
+		{Agent: "cline", UID: hashedC},
+		{Agent: "roo_code", UID: hashedC},
+	} {
+		s := s
+		s.SourcePath = fmt.Sprintf("/tmp/%d", i)
+		seed(t, db, &s, nil)
+	}
+	cases := []struct{ agent, ref, want string }{
+		{"", "1760000000000", "1760000000000"}, // exact uid beats its hashed form
+		{"", hashedA[:8], hashedA},             // short ID from a cite token
+		{"", hashedA, hashedA},                 // stored uid
+		{"", "1760000000001", hashedB},         // hashed form beats a plain prefix
+		{"", "17600000aa", "17600000aa-other"}, // plain prefix
+		{"cline", "TASK_ABC", hashedC},         // case folded, scoped by agent
+		{"roo_code", "task_abc", hashedC},
+	}
+	for _, c := range cases {
+		s, err := db.SessionByRef(c.agent, c.ref)
+		if err != nil || s == nil || s.UID != c.want || (c.agent != "" && s.Agent != c.agent) {
+			t.Errorf("SessionByRef(%q, %q) = %+v, %v; want %s", c.agent, c.ref, s, err, c.want)
+		}
+	}
+	// Without an agent, a task ID stored under two agents is ambiguous.
+	var amb *AmbiguousUIDError
+	if s, err := db.SessionByUIDAny("task_abc"); s != nil || !errors.As(err, &amb) {
+		t.Errorf("SessionByUIDAny(task_abc) = %+v, %v; want an ambiguity error", s, err)
+	}
+	// Cite tokens for hashed ids stay at 8 characters.
+	if got := db.CiteUID(hashedB); got != hashedB[:8] {
+		t.Errorf("CiteUID(%q) = %q, want %q", hashedB, got, hashedB[:8])
 	}
 }

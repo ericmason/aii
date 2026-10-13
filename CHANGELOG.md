@@ -25,6 +25,7 @@ called out under **Changed** when they happen.
 - Aider chats are now indexed. aii reads `.aider.chat.history.md` from every workspace already in the index and its git root, plus any directories you list in the new `AII_AIDER_ROOTS` variable. Each `# aider chat started at` run becomes its own session. Filter with `--source aider` / `--agent aider`; cite tokens use `aid/`.
 - Cline tasks are now indexed, from the VS Code extension (`globalStorage/saoudrizwan.claude-dev`, including VS Code Insiders, VSCodium, Cursor, and VS Code Server) and from the Cline CLI (`~/.cline/data`, honoring `CLINE_DATA_DIR` and `CLINE_DIR`). Filter with `--source cline` / `--agent cline`; cite tokens use `cln/`.
 - Roo Code tasks are now indexed, from the VS Code extension (`globalStorage/rooveterinaryinc.roo-cline`) and the Roo CLI (`~/.vscode-mock/global-storage`). Filter with `--source roo` / `--agent roo`; cite tokens use `roo/`.
+- Cline and Roo Code tasks get distinct cite tokens even when they start seconds apart: the short ID comes from a hash of the task ID rather than its leading timestamp. `aii show`, `get_session`, and the web UI also accept the full task ID.
 
 ### Changed
 - README install instructions now lead with the one-line installer and
