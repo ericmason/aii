@@ -78,7 +78,7 @@ func (m model) doSearch(q string) tea.Cmd {
 
 func (m model) loadPreview(r store.Result) tea.Cmd {
 	return func() tea.Msg {
-		s, err := m.db.SessionByUIDAny(r.SessionUID)
+		s, err := m.db.SessionByUID(r.Agent, r.SessionUID)
 		if err != nil || s == nil {
 			return previewMsg{}
 		}

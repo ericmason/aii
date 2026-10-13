@@ -74,6 +74,18 @@ func ShortAgent(a string) string {
 // at least 8 chars, that no other indexed session shares.
 func ShortUID(db *store.DB, uid string) string { return db.CiteUID(uid) }
 
+// RefAgent returns the agent named by a cite token's code ("cdx/…" →
+// "codex"), or "" when the ref has no agent prefix. Lookups use it to
+// pick between sessions of different agents that share an id.
+func RefAgent(ref string) string {
+	ref = strings.TrimSpace(ref)
+	i := strings.Index(ref, "/")
+	if i <= 0 {
+		return ""
+	}
+	return NormalizeAgent(ref[:i])
+}
+
 // parseSessionRef accepts either a bare uid (full or any unique prefix)
 // or a cite token like "cc/abc12345:42". Returns (uid, ordinal) where
 // ordinal is -1 when the ref didn't carry one. The agent prefix is

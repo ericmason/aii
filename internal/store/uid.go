@@ -42,6 +42,18 @@ func (e *AmbiguousUIDError) Error() string {
 	return b.String()
 }
 
+// foldUID lowercases ASCII letters only, matching SQLite's built-in
+// lower(). Session-id matching is ASCII case-insensitive.
+func foldUID(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
 // prefixUpperBound returns a string that sorts after every string that
 // starts with p, so `uid >= p AND uid < bound` is an index-friendly
 // prefix match without LIKE wildcards.
@@ -68,23 +80,49 @@ func scanSessions(rows *sql.Rows) ([]Session, error) {
 }
 
 // SessionByUIDAny finds a session by full uid or uid prefix, regardless
-// of agent. It tries each match rule in order of preference (exact uid,
-// then uid prefix) and stops at the first rule that matches anything.
-// It returns (nil, nil) when nothing matches and an *AmbiguousUIDError
-// when that rule matches more than one session.
+// of agent. See SessionByRef.
 func (d *DB) SessionByUIDAny(uid string) (*Session, error) {
+	return d.SessionByRef("", uid)
+}
+
+// SessionByRef finds a session by full uid or uid prefix. It tries each
+// match rule in order of preference (exact uid, exact uid ignoring
+// ASCII case, uid prefix ignoring ASCII case) and stops at the first
+// rule that matches anything. When agent is set, it first looks only at
+// that agent's sessions, then falls back to all agents if that finds
+// nothing. It returns (nil, nil) when nothing matches and an
+// *AmbiguousUIDError when the deciding rule matches more than one
+// session.
+func (d *DB) SessionByRef(agent, ref string) (*Session, error) {
+	if agent != "" {
+		s, err := d.sessionByRef(agent, ref)
+		if err != nil || s != nil {
+			return s, err
+		}
+	}
+	return d.sessionByRef("", ref)
+}
+
+func (d *DB) sessionByRef(agent, ref string) (*Session, error) {
+	fold := foldUID(ref)
 	tiers := []struct {
 		where string
 		args  []any
 	}{
-		{`session_uid = ?`, []any{uid}},
-		{`session_uid >= ? AND session_uid < ?`, []any{uid, prefixUpperBound(uid)}},
+		{`session_uid = ?`, []any{ref}},
+		{`lower(session_uid) = ?`, []any{fold}},
+		{`lower(session_uid) >= ? AND lower(session_uid) < ?`, []any{fold, prefixUpperBound(fold)}},
 	}
 	var matches []Session
 	for _, t := range tiers {
-		rows, err := d.Query(`SELECT `+sessionCols+` FROM sessions WHERE `+t.where+`
+		where, args := t.where, t.args
+		if agent != "" {
+			where += ` AND agent = ?`
+			args = append(args, agent)
+		}
+		rows, err := d.Query(`SELECT `+sessionCols+` FROM sessions WHERE `+where+`
 		                      ORDER BY started_at DESC LIMIT ?`,
-			append(t.args, maxAmbiguousCandidates+1)...)
+			append(args, maxAmbiguousCandidates+1)...)
 		if err != nil {
 			return nil, err
 		}
@@ -101,7 +139,7 @@ func (d *DB) SessionByUIDAny(uid string) (*Session, error) {
 	case 1:
 		return &matches[0], nil
 	}
-	e := &AmbiguousUIDError{Ref: uid, Candidates: matches}
+	e := &AmbiguousUIDError{Ref: ref, Candidates: matches}
 	if len(matches) > maxAmbiguousCandidates {
 		e.Candidates, e.More = matches[:maxAmbiguousCandidates], true
 	}
@@ -112,27 +150,31 @@ func (d *DB) SessionByUIDAny(uid string) (*Session, error) {
 }
 
 // CiteUID returns the shortest prefix of uid, at least MinCiteUIDLen
-// characters, that no other indexed session id starts with. Cite
-// tokens use it so SessionByUIDAny resolves them to exactly one
-// session. Unique ids keep their 8-char prefix, which matches tokens
-// printed by earlier versions. A nil DB, or an id shared by sessions
-// from different agents, falls back to the 8-char prefix or full id.
+// characters, that no other indexed session id starts with, ignoring
+// ASCII case. Cite tokens use it so SessionByRef resolves them to
+// exactly one session. Unique ids keep their 8-char prefix, which
+// matches tokens printed by earlier versions. A nil DB falls back to
+// the 8-char prefix. An id that another session shares (under a
+// different agent, or differing only in case) gets the full id, which
+// SessionByRef resolves through its exact-match rule or the token's
+// agent code.
 func (d *DB) CiteUID(uid string) string {
 	n := MinCiteUIDLen
 	if d != nil {
+		fold := foldUID(uid)
 		var dup int
-		if err := d.QueryRow(`SELECT COUNT(*) FROM sessions WHERE session_uid = ?`, uid).Scan(&dup); err == nil && dup > 1 {
+		if err := d.QueryRow(`SELECT COUNT(*) FROM sessions WHERE lower(session_uid) = ?`, fold).Scan(&dup); err == nil && dup > 1 {
 			return uid
 		}
 		for _, q := range []string{
-			`SELECT session_uid FROM sessions WHERE session_uid < ? ORDER BY session_uid DESC LIMIT 1`,
-			`SELECT session_uid FROM sessions WHERE session_uid > ? ORDER BY session_uid ASC LIMIT 1`,
+			`SELECT lower(session_uid) FROM sessions WHERE lower(session_uid) < ? ORDER BY lower(session_uid) DESC LIMIT 1`,
+			`SELECT lower(session_uid) FROM sessions WHERE lower(session_uid) > ? ORDER BY lower(session_uid) ASC LIMIT 1`,
 		} {
 			var nb string
-			if err := d.QueryRow(q, uid).Scan(&nb); err != nil {
+			if err := d.QueryRow(q, fold).Scan(&nb); err != nil {
 				continue
 			}
-			if l := commonPrefixLen(uid, nb) + 1; l > n {
+			if l := commonPrefixLen(fold, nb) + 1; l > n {
 				n = l
 			}
 		}

@@ -116,3 +116,70 @@ func TestSessionByUIDAny_FullIDResolves(t *testing.T) {
 		t.Fatalf("missing id = %v, %v; want nil, nil", s, err)
 	}
 }
+
+func TestSessionByRef_AgentBreaksTieOnSharedFullID(t *testing.T) {
+	db := openTestDB(t)
+	uid := "5e5e5e5e-1111-4222-8333-444455556666"
+	seedUID(t, db, "codex", uid, "codex copy", 1)
+	seedUID(t, db, "claude_code", uid, "claude copy", 2)
+
+	var amb *AmbiguousUIDError
+	if _, err := db.SessionByUIDAny(uid); !errors.As(err, &amb) {
+		t.Fatalf("unscoped lookup of a shared id = %v; want *AmbiguousUIDError", err)
+	}
+	cite := db.CiteUID(uid)
+	for _, agent := range []string{"codex", "claude_code"} {
+		for _, ref := range []string{uid, cite, uid[:8]} {
+			s, err := db.SessionByRef(agent, ref)
+			if err != nil || s == nil || s.Agent != agent || s.UID != uid {
+				t.Fatalf("SessionByRef(%q, %q) = %v, %v; want the %s session", agent, ref, s, err, agent)
+			}
+		}
+	}
+	// An agent with no match falls back to the unscoped lookup.
+	other := "7a7a7a7a-1111-4222-8333-444455556666"
+	seedUID(t, db, "cursor", other, "cursor", 3)
+	if s, err := db.SessionByRef("codex", other[:8]); err != nil || s == nil || s.UID != other {
+		t.Fatalf("SessionByRef fallback = %v, %v; want %s", s, err, other)
+	}
+}
+
+func TestSessionByUIDAny_CaseInsensitive(t *testing.T) {
+	db := openTestDB(t)
+	upper := "ABCDEF12-1111-4222-8333-444455556666"
+	lower := "0123abcd-1111-4222-8333-444455556666"
+	seedUID(t, db, "copilot", upper, "upper", 1)
+	seedUID(t, db, "codex", lower, "lower", 2)
+
+	for ref, want := range map[string]string{
+		"abcdef12":             upper,
+		"AbCdEf12-1111":        upper,
+		strings.ToLower(upper): upper,
+		"0123ABCD":             lower,
+		strings.ToUpper(lower): lower,
+	} {
+		s, err := db.SessionByUIDAny(ref)
+		if err != nil || s == nil || s.UID != want {
+			t.Errorf("SessionByUIDAny(%q) = %v, %v; want %s", ref, s, err, want)
+		}
+	}
+}
+
+func TestCiteUID_UniqueUnderCaseFold(t *testing.T) {
+	db := openTestDB(t)
+	a := "abcdef12-aaaa-4222-8333-444455556666"
+	b := "ABCDEF12-bbbb-4222-8333-444455556666"
+	seedUID(t, db, "codex", a, "a", 1)
+	seedUID(t, db, "copilot", b, "b", 2)
+
+	ca, cb := db.CiteUID(a), db.CiteUID(b)
+	if strings.EqualFold(ca, cb) {
+		t.Fatalf("cite uids collide under case folding: %s %s", ca, cb)
+	}
+	for uid, cite := range map[string]string{a: ca, b: cb} {
+		s, err := db.SessionByUIDAny(cite)
+		if err != nil || s == nil || s.UID != uid {
+			t.Fatalf("SessionByUIDAny(%q) = %v, %v; want %s", cite, s, err, uid)
+		}
+	}
+}

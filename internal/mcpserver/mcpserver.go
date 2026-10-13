@@ -41,7 +41,9 @@ func registerTools(s *server.MCPServer, db *store.DB) {
 					"sessions ranked by bm25 with up to 3 top excerpts each. "+
 					"Every excerpt carries a stable cite token of the form "+
 					"'<agent_code>/<short_uid>:<ordinal>' (e.g. cc/a1b2c3d4:42). "+
-					"short_uid is the shortest unique session-id prefix (8+ chars). "+
+					"short_uid is the shortest unique session-id prefix (8+ chars, "+
+					"regex ^(cc|cdx|cur|pi|oc|gem|cop)/[0-9A-Za-z_-]{8,}:\\d+$); "+
+					"keep the agent code, which picks the session when two agents share an id. "+
 					"Pass that cite (or just the short_uid) to get_session to "+
 					"pull the exact surrounding messages. Agent codes: "+
 					"cc=claude_code, cdx=codex, cur=cursor, pi=pi, oc=opencode, gem=gemini, cop=copilot."),
@@ -305,7 +307,7 @@ func makeGetSessionHandler(db *store.DB) server.ToolHandlerFunc {
 		roleFilter, _ := raw["role"].(string)
 		maxMsgChars := intArg(raw, "max_msg_chars", 0)
 
-		sess, err := pi.LookupSession(db, uid)
+		sess, err := pi.LookupSessionForAgent(db, RefAgent(sessionArg), uid)
 		if err != nil {
 			return mcp.NewToolResultErrorFromErr("lookup failed", err), nil
 		}
@@ -403,7 +405,7 @@ func makeRelatedHandler(db *store.DB) server.ToolHandlerFunc {
 		if uid == "" {
 			return mcp.NewToolResultError("session is required"), nil
 		}
-		src, err := pi.LookupSession(db, uid)
+		src, err := pi.LookupSessionForAgent(db, RefAgent(a.Session), uid)
 		if err != nil {
 			return mcp.NewToolResultErrorFromErr("lookup failed", err), nil
 		}

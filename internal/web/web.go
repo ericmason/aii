@@ -129,7 +129,15 @@ func apiSession(db *store.DB, w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing uid", 400)
 		return
 	}
-	s, err := db.SessionByUIDAny(uid)
+	// The UI passes the row's agent so an id shared by two agents opens
+	// the row that was clicked.
+	var s *store.Session
+	var err error
+	if agent := r.URL.Query().Get("agent"); agent != "" {
+		s, err = db.SessionByUID(agent, uid)
+	} else {
+		s, err = db.SessionByUIDAny(uid)
+	}
 	var amb *store.AmbiguousUIDError
 	if errors.As(err, &amb) {
 		http.Error(w, err.Error(), http.StatusConflict)

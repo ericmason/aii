@@ -317,7 +317,7 @@ or the MCP `get_session` tool as the session ref — the ordinal will be
 used as the anchor if you don't pass one explicitly. Regex:
 
 ```
-^(cc|cdx|cur|pi|oc|gem|cop)/[0-9a-f-]{8,}:\d+$
+^(cc|cdx|cur|pi|oc|gem|cop)/[0-9A-Za-z_-]{8,}:\d+$
 ```
 
 ### Token budgets

@@ -895,7 +895,7 @@ func cmdShow(args []string) error {
 		if ordFromCite >= 0 && *around < 0 && *from < 0 && *to < 0 {
 			*around = ordFromCite
 		}
-		session, err = pi.LookupSession(db, uid)
+		session, err = pi.LookupSessionForAgent(db, mcpserver.RefAgent(fs.Arg(0)), uid)
 	}
 	if err != nil {
 		return err
@@ -1195,7 +1195,7 @@ func cmdRelated(args []string) error {
 	citeDB = db
 
 	uid, _ := parseSessionRef(fs.Arg(0))
-	src, err := pi.LookupSession(db, uid)
+	src, err := pi.LookupSessionForAgent(db, mcpserver.RefAgent(fs.Arg(0)), uid)
 	if err != nil {
 		return err
 	}
@@ -1335,7 +1335,7 @@ func cmdHelpJSON() error {
 		Binary:          "aii",
 		DBPath:          store.DefaultPath(),
 		CiteTokenFormat: "<agent_code>/<short_uid>:<ordinal>",
-		CiteTokenExpr:   `^(cc|cdx|cur|pi|oc|gem|cop)/[0-9a-f-]{8,}:\d+$`,
+		CiteTokenExpr:   `^(cc|cdx|cur|pi|oc|gem|cop)/[0-9A-Za-z_-]{8,}:\d+$`,
 		AgentCodes:      []string{"cc", "cdx", "cur", "pi", "oc", "gem", "cop"},
 		Roles:           []string{"user", "assistant", "thinking", "tool"},
 		SinceFormats:    []string{"7d", "24h", "30m", "1w", "2026-01-01", "RFC3339"},

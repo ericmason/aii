@@ -600,7 +600,13 @@ func isUUIDv7(s string) bool {
 // LookupSession resolves a session ref the way SessionByUIDAny does,
 // and also accepts a full pi session id as pi prints it.
 func LookupSession(db *store.DB, ref string) (*store.Session, error) {
-	s, err := db.SessionByUIDAny(ref)
+	return LookupSessionForAgent(db, "", ref)
+}
+
+// LookupSessionForAgent is LookupSession for a ref whose cite token
+// names an agent; see store.SessionByRef.
+func LookupSessionForAgent(db *store.DB, agent, ref string) (*store.Session, error) {
+	s, err := db.SessionByRef(agent, ref)
 	if err != nil || s != nil {
 		return s, err
 	}
