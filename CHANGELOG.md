@@ -49,7 +49,9 @@ called out under **Changed** when they happen.
   excerpt snippets only for the sessions it returns, not for every
   matching message, and looks up each match's session through a new
   index. The first command after upgrading builds that index once,
-  which can take a minute or two on a multi-gigabyte index.
+  which can take a minute or two on a multi-gigabyte index. Other aii
+  commands keep working while it builds; their searches skip the index
+  until it is ready.
 
 ## [0.5.1] - 2026-05-27
 

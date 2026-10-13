@@ -1,8 +1,11 @@
 package store
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -391,3 +394,136 @@ func equalInt64(a, b []int64) bool {
 }
 
 func sprintf(format string, args ...any) string { return fmt.Sprintf(format, args...) }
+
+// Open must not fail while another process holds the write lock, for
+// example while it builds the search index on a large database, and
+// Search must work until the index exists.
+func TestOpen_SearchIndexWhileDatabaseLocked(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "aii.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	sid := seed(t, db, &Session{
+		Agent: "claudecode", UID: "sess-lock", Workspace: "repo",
+		Title: "lock", StartedAt: 100, EndedAt: 200, SourcePath: "/tmp/lock.jsonl",
+	}, []Message{
+		{Ordinal: 1, Role: "user", TS: 100, Content: "authentication is broken"},
+		{Ordinal: 2, Role: "assistant", TS: 110, Content: "Refresh the OAuthToken first."},
+	})
+	want, err := db.Search(Query{Text: "auth"})
+	if err != nil {
+		t.Fatalf("Search with index: %v", err)
+	}
+	if _, err := db.Exec(`DROP INDEX ` + searchIndexName); err != nil {
+		t.Fatalf("drop index: %v", err)
+	}
+	db.Close()
+
+	// A second connection holds the write lock, as another process would.
+	other, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatalf("open locker: %v", err)
+	}
+	defer other.Close()
+	ctx := context.Background()
+	conn, err := other.Conn(ctx)
+	if err != nil {
+		t.Fatalf("locker conn: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		t.Fatalf("BEGIN IMMEDIATE: %v", err)
+	}
+
+	db2, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open while locked: %v", err)
+	}
+	defer db2.Close()
+	if ok, err := indexExists(db2, searchIndexName); err != nil || ok {
+		t.Fatalf("index should still be missing: exists=%v err=%v", ok, err)
+	}
+
+	if _, err := conn.ExecContext(ctx, `ROLLBACK`); err != nil {
+		t.Fatalf("ROLLBACK: %v", err)
+	}
+
+	got, err := db2.Search(Query{Text: "auth"})
+	if err != nil {
+		t.Fatalf("Search without index: %v", err)
+	}
+	if len(got) != 1 || got[0].SessionID != sid {
+		t.Fatalf("want session %d, got %+v", sid, got)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("results differ without the index:\n got %+v\nwant %+v", got, want)
+	}
+
+	// A later Open builds the index, and the earlier handle starts using it.
+	db3, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open after unlock: %v", err)
+	}
+	db3.Close()
+	if ok, err := indexExists(db2, searchIndexName); err != nil || !ok {
+		t.Fatalf("index should exist after unlocked Open: exists=%v err=%v", ok, err)
+	}
+	got, err = db2.Search(Query{Text: "auth"})
+	if err != nil {
+		t.Fatalf("Search after index build: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("results differ after index build:\n got %+v\nwant %+v", got, want)
+	}
+	if !db2.hasSearchIndex.Load() {
+		t.Errorf("Search should have noticed the new index")
+	}
+}
+
+// Snippets come out the same when the page's ids span several snippet
+// queries.
+func TestSearch_SnippetsAcrossBatches(t *testing.T) {
+	db := openTestDB(t)
+	for i := 0; i < 6; i++ {
+		seed(t, db, &Session{
+			Agent: "codex", UID: fmt.Sprintf("batch-%d", i), Workspace: "repo",
+			Title: "batch", StartedAt: int64(100 + i), EndedAt: int64(200 + i),
+			SourcePath: fmt.Sprintf("/tmp/batch-%d.jsonl", i),
+		}, []Message{
+			{Ordinal: 1, Role: "user", TS: int64(100 + i), Content: "authentication fails on login"},
+			{Ordinal: 2, Role: "assistant", TS: int64(101 + i), Content: "check the OAuthToken expiry"},
+			{Ordinal: 3, Role: "user", TS: int64(102 + i), Content: fmt.Sprintf("auth retry %d worked", i)},
+		})
+	}
+
+	want, err := db.Search(Query{Text: "auth", Limit: 50})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	excerpts := 0
+	for _, r := range want {
+		excerpts += len(r.Excerpts)
+	}
+	old := snippetBatchSize
+	snippetBatchSize = 2
+	t.Cleanup(func() { snippetBatchSize = old })
+	if excerpts <= snippetBatchSize {
+		t.Fatalf("need more than %d excerpts to force several batches, got %d", snippetBatchSize, excerpts)
+	}
+
+	got, err := db.Search(Query{Text: "auth", Limit: 50})
+	if err != nil {
+		t.Fatalf("Search with small batches: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("results differ with small batches:\n got %+v\nwant %+v", got, want)
+	}
+	for _, r := range got {
+		for _, ex := range r.Excerpts {
+			if !strings.Contains(ex.Snippet, "«") {
+				t.Errorf("session %d ordinal %d: snippet %q lacks a highlighted match", r.SessionID, ex.Ordinal, ex.Snippet)
+			}
+		}
+	}
+}

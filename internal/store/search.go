@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -100,10 +101,31 @@ func (d *DB) Search(q Query) ([]Result, error) {
 	// afterward, only for the excerpts on the returned page (see
 	// pageSnippets): a common term can match hundreds of thousands of
 	// messages, and snippet() over all of them dominated search time.
-	// Each hit is joined to its session through idx_messages_id_session,
-	// which avoids reading every matching message row from disk.
+	// Each hit is joined to its session through idx_messages_id_session
+	// when it exists, which avoids reading every matching message row from
+	// disk. Without it, the join falls back to the rowid lookup.
 	const triPenalty = 0.7 // bm25 returns negative scores; scale shrinks magnitude
 	var args []any
+
+	// One read transaction so the snippet pass sees the same snapshot as
+	// the ranking pass, even while the indexer writes.
+	tx, err := d.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("search: %w", err)
+	}
+	defer tx.Rollback()
+
+	msgHint := ""
+	if !d.hasSearchIndex.Load() {
+		ok, err := indexExists(tx, searchIndexName)
+		if err != nil {
+			return nil, fmt.Errorf("search: %w", err)
+		}
+		d.hasSearchIndex.Store(ok)
+	}
+	if d.hasSearchIndex.Load() {
+		msgHint = "INDEXED BY " + searchIndexName
+	}
 
 	// src records which index produced the hit (srcPorter or srcTrigram) so
 	// the excerpt's snippet comes from the same index that scored it.
@@ -111,9 +133,9 @@ func (d *DB) Search(q Query) ([]Result, error) {
             SELECT m.id AS mid, m.session_id, m.ordinal, m.role, m.ts,
                    %d AS src, bm25(messages_fts) AS score
             FROM messages_fts
-            JOIN messages m INDEXED BY idx_messages_id_session ON m.id = messages_fts.rowid
+            JOIN messages m %s ON m.id = messages_fts.rowid
             JOIN sessions s ON s.id = m.session_id
-            WHERE messages_fts MATCH ? %s`, srcPorter, filterSQL)
+            WHERE messages_fts MATCH ? %s`, srcPorter, msgHint, filterSQL)
 	args = append(args, matchPorter)
 	args = append(args, fargs...)
 
@@ -123,9 +145,9 @@ func (d *DB) Search(q Query) ([]Result, error) {
             SELECT m.id, m.session_id, m.ordinal, m.role, m.ts,
                    %d, bm25(messages_fts_tri) * %f
             FROM messages_fts_tri
-            JOIN messages m INDEXED BY idx_messages_id_session ON m.id = messages_fts_tri.rowid
+            JOIN messages m %s ON m.id = messages_fts_tri.rowid
             JOIN sessions s ON s.id = m.session_id
-            WHERE messages_fts_tri MATCH ? %s`, srcTrigram, triPenalty, filterSQL)
+            WHERE messages_fts_tri MATCH ? %s`, srcTrigram, triPenalty, msgHint, filterSQL)
 		args = append(args, matchTri)
 		args = append(args, fargs...)
 	}
@@ -169,14 +191,6 @@ func (d *DB) Search(q Query) ([]Result, error) {
         ORDER BY ts_info.best_score, s.id, r.rn`,
 		rawHits, maxExcerptsPerSession)
 	args = append(args, q.Limit, q.Offset)
-
-	// One read transaction so the snippet pass sees the same snapshot as
-	// the ranking pass, even while the indexer writes.
-	tx, err := d.Begin()
-	if err != nil {
-		return nil, fmt.Errorf("search: %w", err)
-	}
-	defer tx.Rollback()
 
 	out, refs, err := scanSearchRows(tx, query, args)
 	if err != nil {
@@ -276,17 +290,35 @@ func scanSearchRows(tx *sql.Tx, query string, args []any) ([]Result, []excerptRe
 // rows. Asking per row with "MATCH ? AND rowid = ?" re-expands the query
 // every time, which costs about 100 ms per row for a short prefix term
 // such as app* on a large index.
+//
+// The ids are sorted and sent in batches of at most snippetBatchSize, which
+// keeps each query under SQLite's bound-parameter limit when a large
+// --limit puts many thousands of excerpts on the page.
 func pageSnippets(tx *sql.Tx, table, match string, mids []int64) (map[int64]string, error) {
-	lo, hi := mids[0], mids[0]
-	args := []any{}
+	sorted := slices.Clone(mids)
+	slices.Sort(sorted)
+	out := make(map[int64]string, len(mids))
+	for chunk := range slices.Chunk(sorted, snippetBatchSize) {
+		if err := snippetBatch(tx, table, match, chunk, out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// snippetBatchSize caps the message ids per snippet query. A variable so
+// tests can force several batches.
+var snippetBatchSize = 500
+
+// snippetBatch adds snippets for one sorted batch of ids to out.
+func snippetBatch(tx *sql.Tx, table, match string, mids []int64, out map[int64]string) error {
+	args := make([]any, 0, len(mids)+3)
 	marks := make([]string, len(mids))
 	for i, id := range mids {
 		marks[i] = "?"
 		args = append(args, id)
-		lo = min(lo, id)
-		hi = max(hi, id)
 	}
-	args = append(args, match, lo, hi)
+	args = append(args, match, mids[0], mids[len(mids)-1])
 	query := fmt.Sprintf(`
         WITH snips AS MATERIALIZED (
             SELECT rowid AS id,
@@ -299,21 +331,20 @@ func pageSnippets(tx *sql.Tx, table, match string, mids []int64) (map[int64]stri
 		table, strings.Join(marks, ","))
 	rows, err := tx.Query(query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("search snippets: %w", err)
+		return fmt.Errorf("search snippets: %w", err)
 	}
 	defer rows.Close()
-	out := make(map[int64]string, len(mids))
 	for rows.Next() {
 		var (
 			id   int64
 			snip string
 		)
 		if err := rows.Scan(&id, &snip); err != nil {
-			return nil, err
+			return err
 		}
 		out[id] = snip
 	}
-	return out, rows.Err()
+	return rows.Err()
 }
 
 // ContextRows returns messages around a given ordinal in a session.

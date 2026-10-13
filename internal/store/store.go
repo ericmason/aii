@@ -2,13 +2,16 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 type Session struct {
@@ -42,7 +45,14 @@ type IndexState struct {
 	Fingerprint string
 }
 
-type DB struct{ *sql.DB }
+type DB struct {
+	*sql.DB
+
+	// hasSearchIndex caches a positive check for searchIndexName. While it
+	// is false, Search checks again on each call, so it picks up an index
+	// that another process finishes building.
+	hasSearchIndex atomic.Bool
+}
 
 func DefaultPath() string {
 	if p := os.Getenv("AII_DB"); p != "" {
@@ -84,7 +94,58 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("migrate trigram: %w", err)
 	}
 
-	return &DB{db}, nil
+	if err := ensureSearchIndex(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create search index: %w", err)
+	}
+
+	return &DB{DB: db}, nil
+}
+
+// ensureSearchIndex creates the covering index Search uses, if it is
+// missing. On a large existing database the first build takes minutes
+// and holds the write lock. When another process holds that lock (for
+// example, because it is building the index), Open does not wait: it
+// skips the build and Search runs without the index until a later Open
+// builds it.
+func ensureSearchIndex(db *sql.DB) error {
+	exists, err := indexExists(db, searchIndexName)
+	if err != nil || exists {
+		return err
+	}
+	// Open caps the pool at one connection, so these pragmas apply to the
+	// connection that runs the CREATE INDEX.
+	if _, err := db.Exec(`PRAGMA busy_timeout = 0`); err != nil {
+		return err
+	}
+	_, err = db.Exec(searchIndexSQL)
+	if _, rerr := db.Exec(`PRAGMA busy_timeout = 5000`); rerr != nil && err == nil {
+		err = rerr
+	}
+	if isBusy(err) {
+		return nil
+	}
+	return err
+}
+
+// indexExists reports whether the named index is in the schema.
+func indexExists(db interface {
+	QueryRow(string, ...any) *sql.Row
+}, name string) (bool, error) {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, name).Scan(&n)
+	return n > 0, err
+}
+
+// isBusy reports whether err is SQLITE_BUSY or SQLITE_LOCKED, including
+// their extended codes.
+func isBusy(err error) bool {
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	code := se.Code() & 0xff
+	return code == sqlite3.SQLITE_BUSY || code == sqlite3.SQLITE_LOCKED
 }
 
 // migrateTrigram brings old DBs up to the two-FTS-table schema: replaces
