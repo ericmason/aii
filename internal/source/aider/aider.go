@@ -71,6 +71,13 @@ var skipDirs = map[string]bool{
 	"build": true, "__pycache__": true, "venv": true, ".venv": true,
 }
 
+// homeSkipDirs are large system folders skipped when a root is the home
+// directory itself.
+var homeSkipDirs = map[string]bool{
+	"Library": true, "Applications": true, "Movies": true, "Music": true,
+	"Pictures": true, "AppData": true, "snap": true,
+}
+
 // Source implements source.Source for Aider.
 type Source struct {
 	// Roots overrides AII_AIDER_ROOTS (useful for tests).
@@ -187,9 +194,9 @@ func (s *Source) roots() []string {
 		if r == "" {
 			continue
 		}
-		if strings.HasPrefix(r, "~"+string(filepath.Separator)) || r == "~" {
+		if r == "~" || strings.HasPrefix(r, "~/") || strings.HasPrefix(r, "~"+string(filepath.Separator)) {
 			if home, err := os.UserHomeDir(); err == nil {
-				r = filepath.Join(home, strings.TrimPrefix(r, "~"))
+				r = filepath.Join(home, r[1:])
 			}
 		}
 		out = append(out, r)
@@ -219,6 +226,10 @@ func gitRoot(dir string) string {
 func walkRoot(ctx context.Context, root string, add func(string)) {
 	root = filepath.Clean(root)
 	baseDepth := strings.Count(root, string(filepath.Separator))
+	isHome := false
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		isHome = filepath.Clean(home) == root
+	}
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -235,6 +246,9 @@ func walkRoot(ctx context.Context, root string, add func(string)) {
 		if path != root {
 			name := d.Name()
 			if strings.HasPrefix(name, ".") || skipDirs[name] {
+				return filepath.SkipDir
+			}
+			if isHome && homeSkipDirs[name] && filepath.Dir(path) == root {
 				return filepath.SkipDir
 			}
 			if strings.Count(path, string(filepath.Separator))-baseDepth > maxRootDepth {

@@ -409,6 +409,38 @@ func TestRecreatedLargerFileIsReread(t *testing.T) {
 	}
 }
 
+func TestRootsExpandTilde(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv(RootsEnv, strings.Join([]string{"~/src", "~" + string(filepath.Separator) + "work", "~"}, string(filepath.ListSeparator)))
+	got := strings.Join(New().roots(), ",")
+	want := strings.Join([]string{filepath.Join(home, "src"), filepath.Join(home, "work"), home}, ",")
+	if got != want {
+		t.Errorf("roots = %s, want %s", got, want)
+	}
+}
+
+// A root that is the home directory skips system folders like Library.
+func TestHomeRootSkipsSystemDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	for _, d := range []string{"proj", filepath.Join("Library", "proj")} {
+		if err := os.MkdirAll(filepath.Join(home, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(home, d, HistoryFileName), []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var found []string
+	walkRoot(context.Background(), home, func(p string) { found = append(found, p) })
+	if len(found) != 1 || filepath.Base(filepath.Dir(found[0])) != "proj" || strings.Contains(found[0], "Library") {
+		t.Errorf("found %v, want only proj", found)
+	}
+}
+
 func TestTitleSkipsCommandsAndKeepsFirstLine(t *testing.T) {
 	msgs := []store.Message{
 		{Role: "user", Content: "/add calc.py"},

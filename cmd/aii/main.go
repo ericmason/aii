@@ -1519,7 +1519,7 @@ func cmdDoctor() error {
 	fmt.Printf("  gemini       %s\n", strings.Join(gemini.DefaultRoots(), ", "))
 	fmt.Printf("  copilot      %s\n", strings.Join(copilot.DefaultUserDirs(), ", "))
 	fmt.Printf("  aider        <project>/.aider.chat.history.md (known workspaces + $%s)\n", aider.RootsEnv)
-	fmt.Printf("  cline        %s/.cline/data/{sessions,tasks} + VS Code globalStorage/saoudrizwan.claude-dev/tasks\n", home)
+	fmt.Printf("  cline        %s/{sessions,tasks} + VS Code globalStorage/saoudrizwan.claude-dev/tasks\n", cline.DataDir())
 	fmt.Printf("  roo_code     VS Code globalStorage/rooveterinaryinc.roo-cline/tasks + %s/.vscode-mock/global-storage/tasks\n", home)
 
 	if err == nil {

@@ -329,6 +329,13 @@ func TestDefaultRoots(t *testing.T) {
 	if got := New().roots()[0]; got != filepath.Join(home, "alt", "data") {
 		t.Errorf("CLINE_DIR root = %q", got)
 	}
+	if got := DataDir(); got != filepath.Join(home, "alt", "data") {
+		t.Errorf("DataDir with CLINE_DIR = %q", got)
+	}
+	t.Setenv("CLINE_DATA_DIR", filepath.Join(home, "direct"))
+	if got := DataDir(); got != filepath.Join(home, "direct") {
+		t.Errorf("DataDir with CLINE_DATA_DIR = %q", got)
+	}
 }
 
 // Task IDs start with a timestamp, so tasks started close together share

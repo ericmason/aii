@@ -36,6 +36,15 @@
   --copilot-bg:   rgba(52, 211, 153, 0.10);
   --copilot-fg:   #a7f3d0;
   --copilot-ln:   rgba(52, 211, 153, 0.30);
+  --aider-bg:     rgba(234, 179, 8, 0.12);
+  --aider-fg:     #fcd34d;
+  --aider-ln:     rgba(234, 179, 8, 0.32);
+  --cline-bg:     rgba(34, 211, 238, 0.11);
+  --cline-fg:     #67e8f9;
+  --cline-ln:     rgba(34, 211, 238, 0.32);
+  --roo-bg:       rgba(244, 63, 94, 0.12);
+  --roo-fg:       #fda4af;
+  --roo-ln:       rgba(244, 63, 94, 0.34);
 
   --r-sm: 5px;
   --r-md: 9px;
@@ -333,6 +342,9 @@ main {
 .agent.opencode    { background: var(--opencode-bg);  color: var(--opencode-fg);  border-color: var(--opencode-ln); }
 .agent.gemini      { background: var(--gemini-bg);    color: var(--gemini-fg);    border-color: var(--gemini-ln); }
 .agent.copilot     { background: var(--copilot-bg);   color: var(--copilot-fg);   border-color: var(--copilot-ln); }
+.agent.aider       { background: var(--aider-bg);     color: var(--aider-fg);     border-color: var(--aider-ln); }
+.agent.cline       { background: var(--cline-bg);     color: var(--cline-fg);     border-color: var(--cline-ln); }
+.agent.roo_code    { background: var(--roo-bg);       color: var(--roo-fg);       border-color: var(--roo-ln); }
 
 .more {
   margin-left: auto;

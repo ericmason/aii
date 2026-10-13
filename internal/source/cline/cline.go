@@ -130,6 +130,13 @@ func (s *Source) roots() []string {
 	return roots
 }
 
+// DataDir returns the Cline CLI data directory aii reads, honoring
+// CLINE_DATA_DIR and CLINE_DIR.
+func DataDir() string {
+	home, _ := os.UserHomeDir()
+	return clineDataDir(home)
+}
+
 // clineDataDir mirrors Cline's resolveClineDataDir: CLINE_DATA_DIR, then
 // CLINE_DIR/data, then ~/.cline/data.
 func clineDataDir(home string) string {
