@@ -113,6 +113,9 @@ Each ndjson line is self-contained — no cross-line state to track.
   reconstructing "what was I trying to do?" vs. "what did the previous
   agent say?".
 - `role=assistant` — proposed solutions and explanations.
+- `role=tool` — tool output (command results, file reads).
+- `role=system` — text the agent's harness injected, not typed by the
+  user (Claude Code skill bodies, command caveats, agent hand-offs).
 
 ## Token budgets — be defensive
 

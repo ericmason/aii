@@ -53,6 +53,8 @@ func NormalizeRole(r string) string {
 		return "thinking"
 	case "tool":
 		return "tool"
+	case "system", "sys":
+		return "system"
 	}
 	return r
 }

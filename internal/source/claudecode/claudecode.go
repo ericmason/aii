@@ -135,14 +135,15 @@ func (s *Source) scanFile(ctx context.Context, db *store.DB, path string, full b
 		}
 	}
 
-	sess, msgs, newOffset, err := parseDelta(ctx, f, startOffset, size)
+	sess, msgs, newOffset, aiTitle, err := parseDeltaTitle(ctx, f, startOffset, size)
 	if err != nil {
 		return err
 	}
 	// On an incremental run the derived title comes from a later turn.
 	// Keep it only if the stored session has no title yet, which happens
-	// when earlier runs saw no user message.
-	if !truncate && sess.Title != "" && sess.UID != "" {
+	// when earlier runs saw no user message. An ai-title always wins: it
+	// is Claude Code's own, newer summary of the session.
+	if !truncate && !aiTitle && sess.Title != "" && sess.UID != "" {
 		prior, err := db.SessionByUID(agentName, sess.UID)
 		if err != nil {
 			return fmt.Errorf("lookup session: %w", err)
@@ -234,6 +235,12 @@ type rawLine struct {
 	CWD       string          `json:"cwd"`
 	Timestamp string          `json:"timestamp"`
 	Message   json.RawMessage `json:"message"`
+	// IsMeta marks text Claude Code injected on the user's behalf: skill
+	// bodies, local-command caveats, messages from other agents.
+	IsMeta bool `json:"isMeta"`
+	// AITitle is set on "ai-title" records: Claude Code's own short
+	// title for the session. Later records supersede earlier ones.
+	AITitle string `json:"aiTitle"`
 }
 
 // innerMessage is what's inside the "message" field for user/assistant lines.
@@ -262,6 +269,13 @@ type contentPart struct {
 // the byte offset immediately after the last newline-terminated line
 // consumed. A trailing line with no newline yet is left for the next run.
 func parseDelta(ctx context.Context, r io.Reader, startOffset, size int64) (store.Session, []store.Message, int64, error) {
+	sess, msgs, off, _, err := parseDeltaTitle(ctx, r, startOffset, size)
+	return sess, msgs, off, err
+}
+
+// parseDeltaTitle is parseDelta that also reports whether sess.Title came
+// from an ai-title record rather than being derived from a user message.
+func parseDeltaTitle(ctx context.Context, r io.Reader, startOffset, size int64) (store.Session, []store.Message, int64, bool, error) {
 	var sess store.Session
 	var msgs []store.Message
 
@@ -274,7 +288,7 @@ func parseDelta(ctx context.Context, r io.Reader, startOffset, size int64) (stor
 	for {
 		select {
 		case <-ctx.Done():
-			return sess, msgs, lastCompleteOffset, ctx.Err()
+			return sess, msgs, lastCompleteOffset, false, ctx.Err()
 		default:
 		}
 		lineStart := offset
@@ -313,6 +327,9 @@ func parseDelta(ctx context.Context, r io.Reader, startOffset, size int64) (stor
 		}
 	}
 
+	// Only ai-title records set the title while reading lines.
+	aiTitle := sess.Title != ""
+
 	// Finalize session bookkeeping.
 	if len(msgs) > 0 {
 		if sess.StartedAt == 0 {
@@ -326,7 +343,7 @@ func parseDelta(ctx context.Context, r io.Reader, startOffset, size int64) (stor
 			sess.Title = firstUserText(msgs)
 		}
 	}
-	return sess, msgs, lastCompleteOffset, nil
+	return sess, msgs, lastCompleteOffset, aiTitle, nil
 }
 
 // readLine reads one '\n'-terminated line from br. It returns the line
@@ -397,6 +414,16 @@ func handleLine(line []byte, lineStart int64, sess *store.Session, _ int) ([]sto
 		return userMessage(rec, lineStart), true
 	case "assistant":
 		return assistantMessage(rec, lineStart), true
+	case "ai-title":
+		// A resumed or forked file can hold records from another session;
+		// only take this session's own title.
+		if rec.SessionID != "" && sess.UID != "" && rec.SessionID != sess.UID {
+			return nil, true
+		}
+		if t := strings.Join(strings.Fields(rec.AITitle), " "); t != "" {
+			sess.Title = truncateRunes(t, maxTitleRunes)
+		}
+		return nil, true
 	case "progress", "hook_progress", "file-history-snapshot",
 		"queue-operation", "system", "last-prompt":
 		return nil, true
@@ -406,42 +433,59 @@ func handleLine(line []byte, lineStart int64, sess *store.Session, _ int) ([]sto
 	}
 }
 
-// userMessage extracts zero-or-one user message from a "type":"user" line.
+// userMessage extracts up to two messages from a "type":"user" line: what
+// the user typed (role "user") and any tool results riding on the same
+// line (role "tool"), so a role=user filter returns only typed text.
 // Content may be a bare string or an array of content parts.
 func userMessage(rec rawLine, lineStart int64) []store.Message {
 	var inner innerMessage
 	if len(rec.Message) == 0 || json.Unmarshal(rec.Message, &inner) != nil {
 		return nil
 	}
-	text := extractUserContent(inner.Content)
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return nil
+	text, tool := extractUserContent(inner.Content)
+	ts := parseTS(rec.Timestamp)
+	role := "user"
+	if rec.IsMeta {
+		role = "system"
 	}
-	return []store.Message{{
-		Role:         "user",
-		TS:           parseTS(rec.Timestamp),
-		Content:      text,
-		SourceOffset: lineStart,
-	}}
+
+	var out []store.Message
+	if s := strings.TrimSpace(text); s != "" {
+		out = append(out, store.Message{
+			Role:         role,
+			TS:           ts,
+			Content:      s,
+			SourceOffset: lineStart,
+		})
+	}
+	if s := strings.TrimSpace(tool); s != "" {
+		out = append(out, store.Message{
+			Role:         "tool",
+			TS:           ts,
+			Content:      s,
+			SourceOffset: lineStart,
+		})
+	}
+	return out
 }
 
-// extractUserContent handles the three shapes a user content field can take.
-func extractUserContent(raw json.RawMessage) string {
+// extractUserContent handles the three shapes a user content field can
+// take, returning the typed text and the tool results separately.
+func extractUserContent(raw json.RawMessage) (text, tool string) {
 	if len(raw) == 0 {
-		return ""
+		return "", ""
 	}
 	// Case 1: plain string.
 	var asString string
 	if err := json.Unmarshal(raw, &asString); err == nil {
-		return asString
+		return asString, ""
 	}
 	// Case 2: array of parts.
 	var parts []contentPart
 	if err := json.Unmarshal(raw, &parts); err != nil {
-		return ""
+		return "", ""
 	}
-	var b strings.Builder
+	var b, tb strings.Builder
 	for _, p := range parts {
 		switch p.Type {
 		case "text":
@@ -454,8 +498,8 @@ func extractUserContent(raw json.RawMessage) string {
 		case "tool_result":
 			body := extractToolResultContent(p.Content)
 			body = truncateRunes(body, maxToolResult)
-			if b.Len() > 0 {
-				b.WriteString("\n")
+			if tb.Len() > 0 {
+				tb.WriteString("\n")
 			}
 			tag := "[tool_result"
 			if p.IsError {
@@ -465,11 +509,11 @@ func extractUserContent(raw json.RawMessage) string {
 				tag += " id=" + shortID(p.ToolUseID)
 			}
 			tag += "] "
-			b.WriteString(tag)
-			b.WriteString(body)
+			tb.WriteString(tag)
+			tb.WriteString(body)
 		}
 	}
-	return b.String()
+	return b.String(), tb.String()
 }
 
 // extractToolResultContent handles the two shapes a tool_result content
@@ -608,19 +652,29 @@ func truncateRunes(s string, n int) string {
 	return string(runes[:n]) + "…"
 }
 
-// firstUserText returns the first user message's content, truncated for title use.
+// firstUserText returns the first user message's content, truncated for
+// title use. A typed prompt beats a slash-command invocation, which is
+// used only when the read has nothing else.
 func firstUserText(msgs []store.Message) string {
+	fallback := ""
 	for _, m := range msgs {
-		if m.Role == "user" {
-			t := strings.TrimSpace(m.Content)
-			// Single-line: titles shouldn't contain newlines.
-			if i := strings.IndexByte(t, '\n'); i >= 0 {
-				t = t[:i]
-			}
-			return truncateRunes(t, maxTitleRunes)
+		if m.Role != "user" {
+			continue
+		}
+		t := strings.TrimSpace(m.Content)
+		// Single-line: titles shouldn't contain newlines.
+		if i := strings.IndexByte(t, '\n'); i >= 0 {
+			t = t[:i]
+		}
+		t = truncateRunes(t, maxTitleRunes)
+		if !strings.HasPrefix(t, "<command-") {
+			return t
+		}
+		if fallback == "" {
+			fallback = t
 		}
 	}
-	return ""
+	return fallback
 }
 
 // shortID trims Claude's tool_use_... ids to something more eyeball-friendly.

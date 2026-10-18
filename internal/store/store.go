@@ -94,12 +94,103 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("migrate trigram: %w", err)
 	}
 
+	if err := migrateClaudeCode(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate claude code rows: %w", err)
+	}
+
 	if err := ensureSearchIndex(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create search index: %w", err)
 	}
 
 	return &DB{DB: db}, nil
+}
+
+// retitleSQL retitles Claude Code sessions whose title matches cond from
+// the first line (max 200 chars) of their first typed prompt, preferring
+// one that isn't a slash-command invocation. A session with no typed
+// prompt keeps its title.
+func retitleSQL(cond string) string {
+	firstLine := `substr(trim(CASE WHEN instr(m.content, char(10)) > 0
+	                            THEN substr(m.content, 1, instr(m.content, char(10)) - 1)
+	                            ELSE m.content END), 1, 200)`
+	return `UPDATE sessions SET title = COALESCE((
+	    SELECT ` + firstLine + `
+	      FROM messages m
+	     WHERE m.session_id = sessions.id AND m.role = 'user'
+	     ORDER BY m.content LIKE '<command-%', m.ordinal LIMIT 1), title)
+	  WHERE agent = 'claude_code' AND (` + cond + `)`
+}
+
+// claudeCodeMigrations fix rows written by older versions of the Claude
+// Code parser. A reindex fixes sessions whose transcript still exists,
+// but Claude Code deletes old transcripts, so the DB may hold the only
+// copy. Entry i brings PRAGMA user_version from i to i+1.
+var claudeCodeMigrations = [][]string{
+	// 1: tool results were stored as role "user".
+	{
+		`UPDATE messages SET role = 'tool'
+		  WHERE role = 'user'
+		    AND content LIKE '[tool\_result%' ESCAPE '\'
+		    AND session_id IN (SELECT id FROM sessions WHERE agent = 'claude_code')`,
+		retitleSQL(`title LIKE '[tool\_result%' ESCAPE '\'`),
+	},
+	// 2: text Claude Code injects (isMeta lines) was stored as role "user".
+	{
+		`UPDATE messages SET role = 'system'
+		  WHERE role = 'user'
+		    AND (content LIKE '<local-command-caveat>%'
+		      OR content LIKE 'Base directory for this skill:%'
+		      OR content LIKE 'Another Claude session sent a message:%')
+		    AND session_id IN (SELECT id FROM sessions WHERE agent = 'claude_code')`,
+		retitleSQL(`title LIKE '<local-command-caveat>%'
+		         OR title LIKE 'Base directory for this skill:%'
+		         OR title LIKE 'Another Claude session sent a message:%'
+		         OR title LIKE '<command-%'`),
+	},
+}
+
+// migrateClaudeCode applies pending claudeCodeMigrations, each in its own
+// transaction that also bumps PRAGMA user_version. When another process
+// holds the write lock, Open skips the rest; the version only moves on
+// commit, so a later Open retries.
+func migrateClaudeCode(db *sql.DB) error {
+	for {
+		done, err := applyNextMigration(db)
+		if isBusy(err) {
+			return nil
+		}
+		if err != nil || done {
+			return err
+		}
+	}
+}
+
+func applyNextMigration(db *sql.DB) (done bool, err error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	// Read the version inside the transaction so a second process that
+	// waited on the first one's commit sees the new version.
+	var version int
+	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return false, err
+	}
+	if version >= len(claudeCodeMigrations) {
+		return true, nil
+	}
+	for _, stmt := range claudeCodeMigrations[version] {
+		if _, err := tx.Exec(stmt); err != nil {
+			return false, err
+		}
+	}
+	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, version+1)); err != nil {
+		return false, err
+	}
+	return false, tx.Commit()
 }
 
 // ensureSearchIndex creates the covering index Search uses, if it is

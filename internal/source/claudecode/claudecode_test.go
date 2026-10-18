@@ -116,3 +116,102 @@ func TestParseDeltaOversizedUnterminatedTailIsRetried(t *testing.T) {
 		t.Fatalf("offset = %d, want %d (start of the unfinished line)", off, len(before))
 	}
 }
+
+func partsLine(uid, partsJSON string) string {
+	return fmt.Sprintf(`{"type":"user","sessionId":%q,"cwd":"/w","timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":%s}}`, uid, partsJSON) + "\n"
+}
+
+func TestToolResultsAreToolRole(t *testing.T) {
+	data := partsLine("s1", `[{"type":"tool_result","tool_use_id":"toolu_01ABCDEFGHIJK","content":"ls output"}]`) +
+		partsLine("s1", `[{"type":"text","text":"typed by the user"},{"type":"tool_result","tool_use_id":"toolu_02ABCDEFGHIJK","is_error":true,"content":[{"type":"text","text":"boom"}]}]`) +
+		userLine("s1", "plain prompt")
+
+	sess, msgs, _, err := parseDelta(context.Background(), strings.NewReader(data), 0, int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []struct{ role, content string }{
+		{"tool", "[tool_result id=toolu_01ABCD] ls output"},
+		{"user", "typed by the user"},
+		{"tool", "[tool_result error id=toolu_02ABCD] boom"},
+		{"user", "plain prompt"},
+	}
+	if len(msgs) != len(want) {
+		t.Fatalf("got %d messages, want %d: %+v", len(msgs), len(want), msgs)
+	}
+	for i, w := range want {
+		if msgs[i].Role != w.role || msgs[i].Content != w.content {
+			t.Errorf("msg %d = {%s %q}, want {%s %q}", i, msgs[i].Role, msgs[i].Content, w.role, w.content)
+		}
+		if msgs[i].Ordinal != i {
+			t.Errorf("msg %d ordinal = %d", i, msgs[i].Ordinal)
+		}
+	}
+	if sess.Title != "typed by the user" {
+		t.Errorf("title = %q, want the first thing the user typed", sess.Title)
+	}
+}
+
+func metaLine(uid, text string) string {
+	return fmt.Sprintf(`{"type":"user","isMeta":true,"sessionId":%q,"cwd":"/w","timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":[{"type":"text","text":%q}]}}`, uid, text) + "\n"
+}
+
+func TestMetaLinesAreSystemRole(t *testing.T) {
+	data := metaLine("s1", "<local-command-caveat>Caveat</local-command-caveat>") +
+		userLine("s1", "<command-name>/output-style</command-name>") +
+		metaLine("s1", "Base directory for this skill: /x") +
+		userLine("s1", "fix the tabs")
+
+	sess, msgs, _, err := parseDelta(context.Background(), strings.NewReader(data), 0, int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles := []string{}
+	for _, m := range msgs {
+		roles = append(roles, m.Role)
+	}
+	if strings.Join(roles, ",") != "system,user,system,user" {
+		t.Errorf("roles = %v, want [system user system user]", roles)
+	}
+	if sess.Title != "fix the tabs" {
+		t.Errorf("title = %q, want the first typed prompt that isn't a slash command", sess.Title)
+	}
+}
+
+func TestAITitleWins(t *testing.T) {
+	data := userLine("s1", "alright so back to aii") +
+		`{"type":"ai-title","aiTitle":"Early guess","sessionId":"s1"}` + "\n" +
+		`{"type":"ai-title","aiTitle":"Back to aii","sessionId":"s1"}` + "\n"
+
+	sess, _, _, aiTitle, err := parseDeltaTitle(context.Background(), strings.NewReader(data), 0, int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.Title != "Back to aii" || !aiTitle {
+		t.Errorf("title = %q (ai=%v), want the latest ai-title", sess.Title, aiTitle)
+	}
+}
+
+func TestSlashCommandTitleFallback(t *testing.T) {
+	data := userLine("s1", "<command-name>/init</command-name>")
+	sess, _, _, err := parseDelta(context.Background(), strings.NewReader(data), 0, int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(sess.Title, "<command-name>/init") {
+		t.Errorf("title = %q, want the slash command when nothing else exists", sess.Title)
+	}
+}
+
+func TestAITitleFromOtherSessionIgnored(t *testing.T) {
+	data := userLine("s1", "hello") +
+		`{"type":"ai-title","aiTitle":"Mine","sessionId":"s1"}` + "\n" +
+		`{"type":"ai-title","aiTitle":"Not mine","sessionId":"s2"}` + "\n"
+	sess, _, _, ai, err := parseDeltaTitle(context.Background(), strings.NewReader(data), 0, int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.Title != "Mine" || !ai {
+		t.Errorf("title = %q, want this session's own ai-title", sess.Title)
+	}
+}

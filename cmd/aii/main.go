@@ -253,7 +253,7 @@ func cmdSearch(args []string) error {
 	fs := flag.NewFlagSet("search", flag.ExitOnError)
 	agent := fs.String("agent", "", "cc|codex|cursor|pi|opencode|gemini|copilot|aider|cline|roo")
 	workspace := fs.String("workspace", "", "exact workspace path")
-	role := fs.String("role", "", "user|assistant|tool|thinking")
+	role := fs.String("role", "", "user|assistant|tool|thinking|system")
 	since := fs.String("since", "", "7d | 2026-01-01")
 	limit := fs.Int("limit", 20, "max results")
 	offset := fs.Int("offset", 0, "skip this many results before returning (pagination)")
@@ -504,6 +504,8 @@ func normalizeRole(r string) string {
 		return "thinking"
 	case "tool":
 		return "tool"
+	case "system", "sys":
+		return "system"
 	}
 	return r
 }
@@ -856,7 +858,7 @@ func cmdShow(args []string) error {
 	span := fs.Int("span", 3, "messages of context to show on each side of --around")
 	from := fs.Int("from", -1, "first ordinal to include (inclusive)")
 	to := fs.Int("to", -1, "last ordinal to include (inclusive)")
-	role := fs.String("role", "", "user|assistant|tool|thinking — keep only messages with this role")
+	role := fs.String("role", "", "user|assistant|tool|thinking|system — keep only messages with this role")
 	maxMsgChars := fs.Int("max-msg-chars", 0, "truncate each message's content to this many chars (0 = no cap)")
 	maxBytes := fs.Int("max-bytes", 0, "soft cap on total output bytes (0 = no cap)")
 	fs.Parse(reorderFlags(args))
@@ -1357,7 +1359,7 @@ func cmdHelpJSON() error {
 				{"--redact-sources", "", "also rewrite the original JSONL transcripts in place with redacted content (destructive; JSONL sources only)"},
 			}},
 			{"search", "Hybrid (porter + trigram) full-text search over all transcripts", "aii search <query> [--agent ..] [--workspace ..] [--role ..] [--since ..] [--limit 20] [--offset 0] [--json|--ndjson|--pretty | --format pretty|json|ndjson] [--max-bytes N]", []flagInfo{
-				{"--role", "", "filter messages by speaker role (user|assistant|tool|thinking)"},
+				{"--role", "", "filter messages by speaker role (user|assistant|tool|thinking|system)"},
 				{"--offset", "0", "skip N results — use with --limit for pagination"},
 				{"--ndjson", "", "stream one JSON object per excerpt — default when stdout is piped"},
 				{"--format", "", "pretty|json|ndjson — alternative spelling of --pretty/--json/--ndjson"},
