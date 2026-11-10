@@ -36,6 +36,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ericmason/aii/internal/logx"
 	"github.com/ericmason/aii/internal/source"
 	"github.com/ericmason/aii/internal/store"
 
@@ -141,7 +142,12 @@ func (s *Source) Scan(ctx context.Context, db *store.DB, full bool, out chan<- s
 
 		cd, err := parseComposerData(val)
 		if err != nil {
-			log.Printf("cursor: composer %s: parse composerData: %v", composerID, err)
+			// Cursor leaves thousands of empty or stale composerData
+			// rows behind, and every scan sees them again. They are an
+			// expected outcome, not a fault, so they count toward the
+			// summary line below and stay out of the default log.
+			logx.Verbosef("cursor: composer %s: parse composerData: %v", composerID, err)
+			composersSkipped++
 			continue
 		}
 		if len(cd.Headers) == 0 {
@@ -191,7 +197,10 @@ func (s *Source) buildWorkspaceMap(ctx context.Context, root string) (map[string
 		wsPath := readWorkspaceJSON(filepath.Join(hashDir, "workspace.json"))
 		ids, err := readComposerIDsFromWorkspaceDB(ctx, dbPath)
 		if err != nil {
-			log.Printf("cursor: workspace DB %s: %v", dbPath, err)
+			// A workspace DB that Cursor never filled in has no
+			// ItemTable, and a scan meets the same ones every run. The
+			// count of workspaces actually opened is logged below.
+			logx.Verbosef("cursor: workspace DB %s: %v", dbPath, err)
 			continue
 		}
 		opened++

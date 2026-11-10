@@ -129,7 +129,10 @@ per-session transactions.
 pi files are append-only and tail-follow by byte offset like the other JSONL sources. opencode, Gemini CLI, and Copilot Chat rewrite earlier messages in place, so aii re-reads a whole session when it changes (by row counts and update times for opencode, by file size and mtime for the others) and replaces what it had indexed for it.
 
 Incremental by default; `--full` wipes state and reindexes. `--verbose`
-logs each session as it's written and runs an `ANALYZE` at the end.
+logs each session as it's written, logs each item a source skips, and
+runs an `ANALYZE` at the end. Without it, a source logs only its
+summary line, so a scheduled run stays a few lines long however many
+items it walks past.
 
 **Redaction.** By default, common secret shapes (Anthropic/OpenAI/GitHub
 tokens, AWS access keys, JWTs, PEM-armored private keys, passwords in

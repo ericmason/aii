@@ -34,6 +34,19 @@ called out under **Changed** when they happen.
 - `aii index --redact-sources` prints a note and skips pi, opencode, Gemini CLI, Copilot Chat, Aider, Cline, and Roo Code, because aii does not rewrite those agents' files.
 
 ### Fixed
+- The scheduler's log, `~/.local/share/aii/cron.log`, no longer grows
+  without bound. Two changes keep it small. Every `aii index` run first
+  trims the log to its last 1 MiB once it passes 8 MiB, leaving a
+  marker line where the older entries were; `aii cron status` now shows
+  the log's path and current size. And indexing Cursor no longer writes
+  a line per composer it skips: a scan that walked past thousands of
+  empty Cursor records wrote thousands of
+  `parse composerData: empty value` lines every five minutes, forever.
+  Those per-item lines, and the one for a Cursor workspace database
+  with nothing in it, now appear only under `aii index --verbose`. The
+  `cursor: composers seen=… emitted=… skipped=…` summary still prints
+  on every run, and its `skipped` count now includes the records it
+  could not parse, so the three numbers add up.
 - `aii search` no longer fails with `fts5: syntax error near "*"` when
   the query contains an uppercase `AND`, `OR`, or `NOT`. These words
   now work as boolean operators between terms, so

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ericmason/aii/internal/logx"
 	"github.com/ericmason/aii/internal/redact"
 	"github.com/ericmason/aii/internal/source"
 	"github.com/ericmason/aii/internal/store"
@@ -35,6 +36,10 @@ type Stats struct {
 func Run(ctx context.Context, db *store.DB, sources []source.Source, opt Options) (Stats, error) {
 	start := time.Now()
 	stats := Stats{Sources: len(sources)}
+
+	// Parsers log per-item detail through logx, which is silent unless
+	// this run asked for it.
+	logx.SetVerbose(opt.Verbose)
 
 	ch := make(chan source.Batch, 32)
 	var wg sync.WaitGroup

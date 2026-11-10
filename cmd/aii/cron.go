@@ -15,6 +15,7 @@ package main
 // tagged with a marker comment so we can find/remove it idempotently.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -79,6 +80,80 @@ func humanDuration(d time.Duration) string {
 		return fmt.Sprintf("%dh", int(d.Hours()))
 	}
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
+}
+
+// Bounds for the scheduler's log file. The scheduler appends to
+// cron.log on every run and nothing else ever shortens it, so the
+// indexer trims it itself: once the file passes cronLogMaxBytes, the
+// last cronLogKeepBytes are kept and everything older is dropped.
+const (
+	cronLogMaxBytes  = 8 << 20 // trim once the log passes 8 MiB
+	cronLogKeepBytes = 1 << 20 // retain the last 1 MiB
+)
+
+// cronLogPath is where both the LaunchAgent and the crontab line send
+// the indexer's output.
+func cronLogPath() string { return filepath.Join(dataDir(), "cron.log") }
+
+// trimCronLog keeps the scheduler's log under its size cap. It is a
+// no-op when the log is missing or still small.
+func trimCronLog() {
+	if _, err := trimLogFile(cronLogPath(), cronLogMaxBytes, cronLogKeepBytes); err != nil {
+		fmt.Fprintf(os.Stderr, "trim cron log: %v\n", err)
+	}
+}
+
+// trimLogFile drops everything but the last keepBytes of path once the
+// file grows past maxBytes, and reports whether it trimmed.
+//
+// The file is rewritten in place rather than renamed, because the
+// process doing the trimming is usually the one whose stdout the
+// scheduler already pointed at this file. Both launchd and a crontab
+// `>>` redirect open it in append mode, so writes that follow the trim
+// land at the new end of the file. Trimming starts at the first line
+// boundary inside the retained tail, so the log never begins with half
+// a line.
+func trimLogFile(path string, maxBytes, keepBytes int64) (bool, error) {
+	if keepBytes >= maxBytes {
+		return false, fmt.Errorf("keepBytes (%d) must be below maxBytes (%d)", keepBytes, maxBytes)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	size := info.Size()
+	if size <= maxBytes {
+		return false, nil
+	}
+
+	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	tail := make([]byte, keepBytes)
+	if _, err := f.ReadAt(tail, size-keepBytes); err != nil {
+		return false, err
+	}
+	if i := bytes.IndexByte(tail, '\n'); i >= 0 {
+		tail = tail[i+1:]
+	}
+
+	header := fmt.Sprintf("--- aii trimmed this log on %s: dropped %d bytes written before this point ---\n",
+		time.Now().Format("2006-01-02 15:04:05"), size-int64(len(tail)))
+	out := append([]byte(header), tail...)
+
+	if _, err := f.WriteAt(out, 0); err != nil {
+		return false, err
+	}
+	if err := f.Truncate(int64(len(out))); err != nil {
+		return false, err
+	}
+	return true, f.Sync()
 }
 
 const (
@@ -170,6 +245,13 @@ func cronStatus() error {
 			humanDuration(timeSince(info.ModTime())))
 	} else {
 		fmt.Println("Last:  (never — no stamp file)")
+	}
+	if info, err := os.Stat(cronLogPath()); err == nil {
+		fmt.Printf("Log:   %s (%.1f MiB, trimmed to %d MiB past %d MiB)\n",
+			cronLogPath(), float64(info.Size())/(1<<20),
+			cronLogKeepBytes/(1<<20), cronLogMaxBytes/(1<<20))
+	} else {
+		fmt.Printf("Log:   %s (none yet)\n", cronLogPath())
 	}
 	if locked, pid := indexLocked(); locked {
 		fmt.Printf("Lock:  held by pid %d (indexer running now)\n", pid)
@@ -281,7 +363,7 @@ func statusLaunchd() error {
 // `aii index --quiet` every intervalSeconds. Output goes to a log file
 // next to the DB so you can `tail -f` it if something looks off.
 func buildLaunchdPlist(exe string, intervalSeconds int) string {
-	logPath := filepath.Join(dataDir(), "cron.log")
+	logPath := cronLogPath()
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -466,7 +548,7 @@ func cronLine(exe string, intervalSeconds int) (string, error) {
 		fmt.Fprintln(os.Stderr, "warning: cron can't go sub-minute; rounding to */1 * * * *")
 		mins = 1
 	}
-	logPath := filepath.Join(dataDir(), "cron.log")
+	logPath := cronLogPath()
 	if mins == 1 {
 		return fmt.Sprintf("* * * * * %s index --quiet >> %s 2>&1", exe, logPath), nil
 	}
