@@ -20,6 +20,19 @@ type Batch struct {
 	Messages []store.Message
 	State    store.IndexState // persisted after Messages commit
 
+	// Usage holds token usage read from the same bytes. It may come
+	// without a Session (Claude Code subagent transcripts add usage to
+	// their parent session but no messages). Truncate never removes
+	// stored usage, so usage recorded from a transcript that later
+	// shrinks or disappears stays in the index.
+	Usage []store.Usage
+
+	// StaleSessionUID, when set, names a session of the same agent that
+	// older index runs wrongly filed this file's messages under (a
+	// forked Codex rollout stored under its parent's id). The indexer
+	// deletes that session's row for State.SourcePath before upserting.
+	StaleSessionUID string
+
 	// Truncate, when true, tells the indexer to delete any existing
 	// rows for State.SourcePath before inserting. Used when a JSONL
 	// file rotated/shrank, or a Cursor composer's bubble list changed

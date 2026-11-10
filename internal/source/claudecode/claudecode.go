@@ -9,12 +9,14 @@ package claudecode
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -81,16 +83,46 @@ func (s *Source) Scan(ctx context.Context, db *store.DB, full bool, out chan<- s
 			return ctx.Err()
 		default:
 		}
-		if err := s.scanFile(ctx, db, path, full, out); err != nil {
+		if err := s.scanFile(ctx, db, path, full, false, out); err != nil {
 			log.Printf("claudecode: %s: %v", path, err)
 			continue
+		}
+	}
+
+	// Subagent transcripts live under <project>/<session>/subagents/,
+	// sometimes in nested folders. Their messages are not indexed, but
+	// their token usage counts toward the parent session: every line
+	// carries the parent's sessionId.
+	subDirs, err := filepath.Glob(filepath.Join(root, "*", "*", "subagents"))
+	if err != nil {
+		return fmt.Errorf("glob subagents: %w", err)
+	}
+	for _, dir := range subDirs {
+		werr := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			if d.IsDir() || !strings.HasSuffix(d.Name(), ".jsonl") {
+				return nil
+			}
+			if err := s.scanFile(ctx, db, path, full, true, out); err != nil {
+				log.Printf("claudecode: %s: %v", path, err)
+			}
+			return nil
+		})
+		if werr != nil {
+			return werr
 		}
 	}
 	return nil
 }
 
 // scanFile processes a single JSONL file, emitting at most one Batch.
-func (s *Source) scanFile(ctx context.Context, db *store.DB, path string, full bool, out chan<- source.Batch) error {
+// With usageOnly, the Batch carries only token usage and index state.
+func (s *Source) scanFile(ctx context.Context, db *store.DB, path string, full, usageOnly bool, out chan<- source.Batch) error {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		abs = path
@@ -135,9 +167,24 @@ func (s *Source) scanFile(ctx context.Context, db *store.DB, path string, full b
 		}
 	}
 
-	sess, msgs, newOffset, err := parseDelta(ctx, f, startOffset, size)
+	dl, err := parse(ctx, f, startOffset, size, abs)
 	if err != nil {
 		return err
+	}
+	sess, msgs, newOffset := dl.sess, dl.msgs, dl.offset
+	state := store.IndexState{
+		SourcePath: abs,
+		MtimeNs:    mtimeNs,
+		Size:       size,
+		LastOffset: newOffset,
+	}
+	if usageOnly {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case out <- source.Batch{State: state, Usage: dl.usage, Truncate: truncate}:
+		}
+		return nil
 	}
 	// On an incremental run the derived title comes from a later turn.
 	// Keep it only if the stored session has no title yet, which happens
@@ -156,12 +203,8 @@ func (s *Source) scanFile(ctx context.Context, db *store.DB, path string, full b
 		out <- source.Batch{
 			Session:  store.Session{Agent: agentName, SourcePath: abs, SourceMtimeNs: mtimeNs, SourceSize: size},
 			Messages: nil,
-			State: store.IndexState{
-				SourcePath: abs,
-				MtimeNs:    mtimeNs,
-				Size:       size,
-				LastOffset: newOffset,
-			},
+			State:    state,
+			Usage:    dl.usage,
 			Truncate: truncate,
 		}
 		return nil
@@ -191,12 +234,8 @@ func (s *Source) scanFile(ctx context.Context, db *store.DB, path string, full b
 	case out <- source.Batch{
 		Session:  sess,
 		Messages: msgs,
-		State: store.IndexState{
-			SourcePath: abs,
-			MtimeNs:    mtimeNs,
-			Size:       size,
-			LastOffset: newOffset,
-		},
+		State:    state,
+		Usage:    dl.usage,
 		Truncate: truncate,
 	}:
 	}
@@ -262,8 +301,27 @@ type contentPart struct {
 // the byte offset immediately after the last newline-terminated line
 // consumed. A trailing line with no newline yet is left for the next run.
 func parseDelta(ctx context.Context, r io.Reader, startOffset, size int64) (store.Session, []store.Message, int64, error) {
+	dl, err := parse(ctx, r, startOffset, size, "")
+	return dl.sess, dl.msgs, dl.offset, err
+}
+
+// delta is what one read of a transcript yields.
+type delta struct {
+	sess   store.Session
+	msgs   []store.Message
+	usage  []store.Usage
+	offset int64
+}
+
+// parse is parseDelta plus token usage. path keys usage records that
+// carry no message id.
+func parse(ctx context.Context, r io.Reader, startOffset, size int64, path string) (delta, error) {
 	var sess store.Session
 	var msgs []store.Message
+	var usage []store.Usage
+	wrap := func(off int64, err error) (delta, error) {
+		return delta{sess: sess, msgs: msgs, usage: usage, offset: off}, err
+	}
 
 	br := bufio.NewReaderSize(io.LimitReader(r, size-startOffset), scannerInitial)
 
@@ -274,7 +332,7 @@ func parseDelta(ctx context.Context, r io.Reader, startOffset, size int64) (stor
 	for {
 		select {
 		case <-ctx.Done():
-			return sess, msgs, lastCompleteOffset, ctx.Err()
+			return wrap(lastCompleteOffset, ctx.Err())
 		default:
 		}
 		lineStart := offset
@@ -304,6 +362,9 @@ func parseDelta(ctx context.Context, r io.Reader, startOffset, size int64) (stor
 		if len(trimmed) == 0 {
 			continue
 		}
+		if bytes.Contains(trimmed, []byte(`"usage"`)) {
+			usage = append(usage, lineUsage(trimmed, lineStart, path)...)
+		}
 		if m, ok := handleLine(trimmed, lineStart, &sess, ordinal); ok {
 			for _, em := range m {
 				em.Ordinal = ordinal
@@ -326,7 +387,110 @@ func parseDelta(ctx context.Context, r io.Reader, startOffset, size int64) (stor
 			sess.Title = firstUserText(msgs)
 		}
 	}
-	return sess, msgs, lastCompleteOffset, nil
+	return wrap(lastCompleteOffset, nil)
+}
+
+// usageLine is the part of a transcript record that carries token usage.
+type usageLine struct {
+	SessionID string `json:"sessionId"`
+	RequestID string `json:"requestId"`
+	Timestamp string `json:"timestamp"`
+	Message   struct {
+		ID    string       `json:"id"`
+		Model string       `json:"model"`
+		Usage *claudeUsage `json:"usage"`
+	} `json:"message"`
+}
+
+type tokenCounts struct {
+	InputTokens              int64 `json:"input_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+	CacheCreation            *struct {
+		Ephemeral5m int64 `json:"ephemeral_5m_input_tokens"`
+		Ephemeral1h int64 `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
+}
+
+func (t tokenCounts) cacheCreation() int64 {
+	if t.CacheCreationInputTokens == 0 && t.CacheCreation != nil {
+		return t.CacheCreation.Ephemeral5m + t.CacheCreation.Ephemeral1h
+	}
+	return t.CacheCreationInputTokens
+}
+
+type claudeUsage struct {
+	tokenCounts
+	Speed      string `json:"speed"`
+	Iterations []struct {
+		tokenCounts
+		Type  string `json:"type"`
+		Model string `json:"model"`
+	} `json:"iterations"`
+}
+
+// lineUsage returns the token usage a record reports: the response's own
+// usage, plus one entry per advisor model call it made.
+//
+// Claude Code writes one line per content block of a response, each with
+// the same message id, request id, and usage, so the key is the message id
+// and request id together; the store keeps one row per key. Resumed
+// sessions copy earlier lines into a new file under a new session id, so
+// with no request id the key is the message id alone. A record with no
+// message id has nothing that survives a copy and is keyed by its file
+// and byte offset.
+func lineUsage(line []byte, lineStart int64, path string) []store.Usage {
+	var rec usageLine
+	if err := json.Unmarshal(line, &rec); err != nil || rec.Message.Usage == nil {
+		return nil
+	}
+	u := rec.Message.Usage
+	var key string
+	switch {
+	case rec.Message.ID != "" && rec.RequestID != "":
+		key = rec.Message.ID + "|" + rec.RequestID
+	case rec.Message.ID != "":
+		key = rec.Message.ID
+	default:
+		key = fmt.Sprintf("%s@%d", path, lineStart)
+	}
+	model := rec.Message.Model
+	if model == "<synthetic>" {
+		model = ""
+	} else if model != "" && u.Speed == "fast" {
+		model += "-fast"
+	}
+	ts := parseTS(rec.Timestamp)
+	mk := func(key, model string, t tokenCounts) store.Usage {
+		return store.Usage{
+			Agent:         agentName,
+			SessionUID:    rec.SessionID,
+			Key:           key,
+			TS:            ts,
+			Model:         model,
+			Input:         t.InputTokens,
+			Output:        t.OutputTokens,
+			CacheCreation: t.cacheCreation(),
+			CacheRead:     t.CacheReadInputTokens,
+		}
+	}
+	var out []store.Usage
+	if main := mk(key, model, u.tokenCounts); main.Total() > 0 && rec.SessionID != "" {
+		out = append(out, main)
+	}
+	n := 0
+	for _, it := range u.Iterations {
+		if it.Type != "advisor_message" || it.Model == "" {
+			continue
+		}
+		adv := mk(fmt.Sprintf("%s|advisor=%d", key, n), it.Model, it.tokenCounts)
+		n++
+		if adv.Total() > 0 && rec.SessionID != "" {
+			out = append(out, adv)
+		}
+	}
+	return out
 }
 
 // readLine reads one '\n'-terminated line from br. It returns the line

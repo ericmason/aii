@@ -60,6 +60,9 @@ Usage:
   aii related <uid> [--limit 10] [--agent ..]  # find similar sessions
   aii mcp                                       # stdio MCP server for agent use
   aii stats
+  aii usage   [--since 30d|2026-01-01] [--until 2026-02-01] [--agent ..] [--workspace DIR]
+                [--by day|month|model|agent|workspace|session[,..]] [--limit N]
+                [--json|--ndjson|--pretty | --format pretty|json|ndjson]
   aii serve   [--addr 127.0.0.1:8723]
   aii ui      [--addr 127.0.0.1:8723]       # serve + open browser (alias: web)
   aii tui
@@ -100,6 +103,8 @@ func main() {
 		err = cmdShow(args)
 	case "stats":
 		err = cmdStats(args)
+	case "usage":
+		err = cmdUsage(args)
 	case "serve":
 		err = cmdServe(ctx, args)
 	case "ui", "web":
@@ -1388,6 +1393,13 @@ func cmdHelpJSON() error {
 			{"ask", "Retrieve top-k transcripts and pipe a grounded prompt into an LLM CLI", "aii ask <question> [--k 6] [--context 2] [--cmd \"claude -p\"] [--dry-run] [--show-sources]", nil},
 			{"related", "Find sessions covering similar ground to the given uid", "aii related <uid> [--limit 10] [--agent ..] [--since ..]", nil},
 			{"stats", "Row counts by agent + latest session timestamp", "aii stats", nil},
+			{"usage", "Token usage (input, output, cache write, cache read) recorded at index time, grouped by day, month, model, agent, workspace, or session. Usage stays in the index after the agent deletes its transcript.", "aii usage [--since ..] [--until ..] [--agent ..] [--workspace ..] [--by day|month|model|agent|workspace|session[,..]] [--limit N] [--json|--ndjson|--pretty | --format pretty|json|ndjson]", []flagInfo{
+				{"--since", "", "first day or time to include (30d, 2026-01-01); a bare date is local midnight"},
+				{"--until", "", "last day to include (a bare date includes that whole local day) or an exclusive time"},
+				{"--by", "day", "comma-separated grouping keys: day, month, model, agent, workspace, session (days and months are local time)"},
+				{"--limit", "0", "max rows (0 = all); with a non-time grouping, rows are sorted by total tokens, largest first"},
+				{"--format", "", "pretty|json|ndjson — alternative spelling of --pretty/--json/--ndjson"},
+			}},
 			{"doctor", "Print DB path, source paths, and per-agent counts", "aii doctor", nil},
 			{"serve", "HTTP UI bound to localhost", "aii serve [--addr 127.0.0.1:8723]", nil},
 			{"ui", "Serve + open browser (alias: web)", "aii ui [--addr 127.0.0.1:8723]", nil},
