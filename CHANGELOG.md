@@ -8,6 +8,8 @@ called out under **Changed** when they happen.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-10
+
 ### Fixed
 - Two indexers can no longer run at once. The index lock is now an exclusive advisory lock (`flock` on macOS and Linux, `LockFileEx` on Windows) held on `~/.local/share/aii/.index.lock` for the life of the run, so the operating system releases it when an indexer exits or is killed. Before, each run wrote its PID to the lock file and deleted the file when the owning PID looked dead, so two runs that started together could both delete it, both claim the lock, and both trim `cron.log`, losing log lines. `aii cron status` still reports the holder's PID, now read from the file for display only. **Let a running `aii index` finish before you upgrade**, because an indexer started by 0.6.0 or earlier takes no advisory lock. For this release the new binary also stands aside while the lock file names any other running process, so the two never index together; `aii cron status` reports that indexer the same way.
 - `aii index` now fails with a message instead of skipping silently when it cannot tell whether another indexer is running. A lock file it cannot create, or a filesystem whose locks do not work (some network and FUSE mounts), used to read as "another indexer is running", which `--quiet` hid and which exited 0 — so scheduled indexing could stop for good without a word. `aii cron status` reports that state as `Lock:  unknown` rather than free.
@@ -212,7 +214,8 @@ called out under **Changed** when they happen.
   `aii serve` / MCP server over stdio.
 - CI workflow and `scripts/release.sh` for tagging releases.
 
-[Unreleased]: https://github.com/ericmason/aii/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/ericmason/aii/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/ericmason/aii/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/ericmason/aii/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/ericmason/aii/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/ericmason/aii/compare/v0.4.2...v0.5.0
