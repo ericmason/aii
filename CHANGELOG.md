@@ -8,6 +8,8 @@ called out under **Changed** when they happen.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-10
+
 ### Added
 - One-line install script for macOS and Linux — no Go toolchain
   required: `curl -fsSL
@@ -204,7 +206,8 @@ called out under **Changed** when they happen.
   `aii serve` / MCP server over stdio.
 - CI workflow and `scripts/release.sh` for tagging releases.
 
-[Unreleased]: https://github.com/ericmason/aii/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/ericmason/aii/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/ericmason/aii/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/ericmason/aii/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/ericmason/aii/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/ericmason/aii/compare/v0.4.1...v0.4.2
