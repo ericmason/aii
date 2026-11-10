@@ -25,6 +25,7 @@ called out under **Changed** when they happen.
 - Aider chats are now indexed. aii reads `.aider.chat.history.md` from every workspace already in the index and its git root, plus any directories you list in the new `AII_AIDER_ROOTS` variable (a root that is your home directory skips `Library`, `AppData`, and media folders). Each `# aider chat started at` run becomes its own session. Filter with `--source aider` / `--agent aider`; cite tokens use `aid/`.
 - Cline tasks are now indexed, from the VS Code extension (`globalStorage/saoudrizwan.claude-dev`, including VS Code Insiders, VSCodium, Cursor, and VS Code Server) and from the Cline CLI (`~/.cline/data`, honoring `CLINE_DATA_DIR` and `CLINE_DIR`). Filter with `--source cline` / `--agent cline`; cite tokens use `cln/`.
 - Roo Code tasks are now indexed, from the VS Code extension (`globalStorage/rooveterinaryinc.roo-cline`) and the Roo CLI (`~/.vscode-mock/global-storage`). Filter with `--source roo` / `--agent roo`; cite tokens use `roo/`.
+- `aii usage` reports token usage (input, output, cache write, cache read) from Claude Code and Codex transcripts, grouped with `--by day|month|model|agent|workspace|session` and filtered with `--since`, `--until`, `--agent`, and `--workspace`. `aii index` records usage as it reads transcripts and keeps it after the agent deletes them, so you keep usage history beyond Claude Code's 30-day transcript retention. Each Claude Code response counts once even though its transcript repeats it, and subagent usage counts toward the session that started the subagent. Run `aii index --full` once to record usage from transcripts already indexed. `aii help --json`, the README, and the aii skill describe the command.
 
 ### Changed
 - README install instructions now lead with the one-line installer and
@@ -34,6 +35,7 @@ called out under **Changed** when they happen.
 - `aii index --redact-sources` prints a note and skips pi, opencode, Gemini CLI, Copilot Chat, Aider, Cline, and Roo Code, because aii does not rewrite those agents' files.
 
 ### Fixed
+- A forked Codex session (one started with `forked_from_id`, such as a Codex subagent) is now indexed as its own session. Before, its messages were added to the parent session, because the rollout repeats the parent's `session_meta` record. Run `aii index --source codex --full` to split sessions indexed before this fix.
 - `aii search` no longer fails with `fts5: syntax error near "*"` when
   the query contains an uppercase `AND`, `OR`, or `NOT`. These words
   now work as boolean operators between terms, so

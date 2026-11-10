@@ -68,6 +68,29 @@ CREATE TABLE IF NOT EXISTS index_state (
     fingerprint TEXT
 );
 
+-- One row per model API request (or, for agents that log running totals,
+-- one row per running-total snapshot; see cumulative). Rows are keyed by
+-- agent and session_uid rather than sessions.id, so they outlive the session
+-- row: a re-index that deletes and re-inserts a session, or a transcript
+-- that the agent deletes, leaves recorded usage in place.
+CREATE TABLE IF NOT EXISTS token_usage (
+    id                    INTEGER PRIMARY KEY,
+    agent                 TEXT NOT NULL,
+    session_uid           TEXT NOT NULL,
+    request_key           TEXT NOT NULL,
+    ts                    INTEGER,
+    model                 TEXT,
+    input_tokens          INTEGER NOT NULL DEFAULT 0,
+    output_tokens         INTEGER NOT NULL DEFAULT 0,
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+    cumulative            INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(agent, request_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_token_usage_session ON token_usage(agent, session_uid);
+CREATE INDEX IF NOT EXISTS idx_token_usage_ts      ON token_usage(ts);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_agent     ON sessions(agent);
 CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace);
 CREATE INDEX IF NOT EXISTS idx_sessions_started   ON sessions(started_at);

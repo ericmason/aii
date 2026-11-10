@@ -288,7 +288,9 @@ func (d *DB) SaveState(s IndexState) error {
 	return err
 }
 
-// DeleteBySourcePath removes sessions & state for a given file (used on truncation).
+// DeleteBySourcePath removes sessions & state for a given file (used on
+// truncation). It leaves token_usage alone: usage rows are keyed by session
+// uid, not row id, and must outlive the transcript they came from.
 func (d *DB) DeleteBySourcePath(path string) error {
 	tx, err := d.Begin()
 	if err != nil {

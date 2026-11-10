@@ -215,7 +215,8 @@ binary, zero network" promise is the whole design.
    --json` and the cite-token regex.
 4. Update `README.md` (source list) and this file.
 5. Never write to the agent's data. Open SQLite stores with `mode=ro` (not `immutable=1`, which ignores a live WAL), and skip the source in `--redact-sources`.
-6. Test the parser with synthetic fixtures in `internal/source/<name>/*_test.go`, including a second index pass that adds no rows.
+6. If the agent's files record token counts, put them in `Batch.Usage` (`store.Usage`). Give each API request a stable `Key` so reading the same bytes twice stores one row, and set `Cumulative` when the agent logs running totals instead of per-request counts. Usage rows are keyed by session uid, not `sessions.id`, and `DeleteBySourcePath` leaves them in place; keep it that way, because usage must outlive the transcript.
+7. Test the parser with synthetic fixtures in `internal/source/<name>/*_test.go`, including a second index pass that adds no rows.
 
 ### Recording real sessions for parser tests
 

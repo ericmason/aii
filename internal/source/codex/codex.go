@@ -97,6 +97,46 @@ type functionCallPayload struct {
 	Arguments string `json:"arguments"`
 }
 
+// turn_context payload: names the model for the turns that follow.
+type turnContextPayload struct {
+	Model string `json:"model"`
+}
+
+// event_msg payload of type token_count. TotalTokenUsage is a running
+// total for the whole session; Info is null before the first response.
+type tokenCountPayload struct {
+	Type string `json:"type"`
+	Info *struct {
+		TotalTokenUsage *codexTokenUsage `json:"total_token_usage"`
+	} `json:"info"`
+}
+
+type codexTokenUsage struct {
+	InputTokens           int64 `json:"input_tokens"` // includes cached input
+	CachedInputTokens     int64 `json:"cached_input_tokens"`
+	CacheWriteInputTokens int64 `json:"cache_write_input_tokens"`
+	OutputTokens          int64 `json:"output_tokens"` // includes reasoning output
+}
+
+// tokenSnapshot turns a running total into a cumulative usage row. The
+// session and key are filled in once the session id is known.
+func tokenSnapshot(t *codexTokenUsage, ts int64, model string) store.Usage {
+	input := t.InputTokens - t.CachedInputTokens
+	if input < 0 {
+		input = 0
+	}
+	return store.Usage{
+		Agent:         "codex",
+		TS:            ts,
+		Model:         model,
+		Input:         input,
+		Output:        t.OutputTokens,
+		CacheCreation: t.CacheWriteInputTokens,
+		CacheRead:     t.CachedInputTokens,
+		Cumulative:    true,
+	}
+}
+
 type functionCallOutputPayload struct {
 	Type   string `json:"type"`
 	Output string `json:"output"`
@@ -196,6 +236,8 @@ func (s *Source) scanRolloutFile(ctx context.Context, db *store.DB, full bool, o
 		startedAt     int64
 		title         string
 		messages      []store.Message
+		usage         []store.Usage
+		model         string
 		lastTS        int64
 		readOffset    = startOffset
 		lastLineStart = startOffset
@@ -273,6 +315,11 @@ func (s *Source) scanRolloutFile(ctx context.Context, db *store.DB, full bool, o
 				fmt.Fprintf(os.Stderr, "codex: bad session_meta in %s: %v\n", path, err)
 				continue
 			}
+			// A forked session's rollout repeats its parent's
+			// session_meta after its own; the first one names this file.
+			if sessionUID != "" {
+				continue
+			}
 			if meta.ID != "" {
 				sessionUID = meta.ID
 			}
@@ -314,6 +361,21 @@ func (s *Source) scanRolloutFile(ctx context.Context, db *store.DB, full bool, o
 			if title == "" && msg.Role == "user" {
 				title = truncateRunes(msg.Content, 200)
 			}
+		case "turn_context":
+			var tc turnContextPayload
+			if json.Unmarshal(line.Payload, &tc) == nil && tc.Model != "" {
+				model = tc.Model
+			}
+		case "event_msg":
+			if !strings.Contains(trimmed, `"token_count"`) {
+				continue
+			}
+			var tc tokenCountPayload
+			if json.Unmarshal(line.Payload, &tc) != nil || tc.Type != "token_count" ||
+				tc.Info == nil || tc.Info.TotalTokenUsage == nil {
+				continue
+			}
+			usage = append(usage, tokenSnapshot(tc.Info.TotalTokenUsage, ts, model))
 		default:
 			// Skip all other line types (event_msg, function_call, etc.
 			// that appear at the top level; we only care about
@@ -328,10 +390,15 @@ func (s *Source) scanRolloutFile(ctx context.Context, db *store.DB, full bool, o
 		newLastOffset = readOffset
 	}
 
+	if sessionUID == "" && startOffset > 0 {
+		// Resuming a file whose session_meta was in the already-consumed
+		// prefix: read it from the file's first line. Older index runs
+		// stored a forked rollout under its parent's id, so the sessions
+		// table can't be trusted for those files.
+		sessionUID = firstSessionMetaID(absPath)
+	}
 	if sessionUID == "" {
-		// Can happen when resuming a file whose session_meta was in the
-		// already-consumed prefix. Try to recover via SessionByUIDAny isn't
-		// possible without UID — fall back to path-based lookup.
+		// Fall back to the path-based lookup.
 		if prev != nil {
 			uid, werr := sessionUIDFromPath(db, absPath)
 			if werr == nil && uid != "" {
@@ -355,6 +422,21 @@ func (s *Source) scanRolloutFile(ctx context.Context, db *store.DB, full bool, o
 		case out <- srcpkg.Batch{State: state, Truncate: truncate}:
 		}
 		return nil
+	}
+
+	// Key each running total by its values: the same snapshot read again
+	// (or a token_count repeated without a new request) maps to one row.
+	var priorModel string
+	for i := range usage {
+		u := &usage[i]
+		if u.Model == "" {
+			if priorModel == "" {
+				priorModel, _ = db.LastUsageModel("codex", sessionUID)
+			}
+			u.Model = priorModel
+		}
+		u.SessionUID = sessionUID
+		u.Key = fmt.Sprintf("%s|%d|%d|%d|%d", sessionUID, u.Input, u.Output, u.CacheCreation, u.CacheRead)
 	}
 
 	endedAt := lastTS
@@ -388,6 +470,7 @@ func (s *Source) scanRolloutFile(ctx context.Context, db *store.DB, full bool, o
 		Session:  session,
 		Messages: messages,
 		State:    state,
+		Usage:    usage,
 		Truncate: truncate,
 	}:
 	}
@@ -464,6 +547,29 @@ func buildMessage(head responseItemHead, payload json.RawMessage, ts int64) (sto
 		return store.Message{Role: "tool", TS: ts, Content: "[tool_result] " + out}, true
 	}
 	return store.Message{}, false
+}
+
+// firstSessionMetaID returns the session id from a rollout's first line,
+// or "" if that line is not a session_meta record.
+func firstSessionMetaID(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	first, err := bufio.NewReaderSize(f, 1<<16).ReadBytes('\n')
+	if err != nil {
+		return ""
+	}
+	var line rolloutLine
+	if json.Unmarshal(first, &line) != nil || line.Type != "session_meta" {
+		return ""
+	}
+	var meta sessionMetaPayload
+	if json.Unmarshal(line.Payload, &meta) != nil {
+		return ""
+	}
+	return meta.ID
 }
 
 func sessionUIDFromPath(db *store.DB, path string) (string, error) {

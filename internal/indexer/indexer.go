@@ -83,8 +83,14 @@ func apply(db *store.DB, b source.Batch, verbose bool) error {
 	}
 
 	// Some batches carry only a state update (e.g. codex history scan
-	// advanced the file offset but produced no new sessions).
+	// advanced the file offset but produced no new sessions), possibly
+	// with usage for a session that another file holds.
 	if b.Session.UID == "" && len(b.Messages) == 0 {
+		if len(b.Usage) > 0 {
+			if err := insertUsage(db, b.Usage); err != nil {
+				return err
+			}
+		}
 		return db.SaveState(b.State)
 	}
 
@@ -101,6 +107,10 @@ func apply(db *store.DB, b source.Batch, verbose bool) error {
 		tx.Rollback()
 		return fmt.Errorf("insert messages: %w", err)
 	}
+	if err := db.InsertUsage(tx, b.Usage); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("insert usage: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -114,6 +124,18 @@ func apply(db *store.DB, b source.Batch, verbose bool) error {
 			b.Session.Agent, shortUID(b.Session.UID), len(b.Messages), b.Session.Workspace)
 	}
 	return nil
+}
+
+func insertUsage(db *store.DB, rows []store.Usage) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	if err := db.InsertUsage(tx, rows); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("insert usage: %w", err)
+	}
+	return tx.Commit()
 }
 
 // redactBatch scrubs secrets out of every user-visible text field before

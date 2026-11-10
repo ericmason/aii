@@ -173,6 +173,18 @@ aii stats
 aii doctor       # DB path, source paths, per-agent counts
 ```
 
+### Token usage
+
+For "how many tokens did I use" questions, read the usage the index recorded from Claude Code and Codex transcripts. It covers days whose transcripts the agent has since deleted.
+
+```sh
+aii usage --since 30d --by day             # daily totals (local days)
+aii usage --since 2026-01-01 --by month,model
+aii usage --since 7d --by session --limit 10 --json   # biggest sessions, with cite tokens
+```
+
+`--by` accepts `day`, `month`, `model`, `agent`, `workspace`, and `session`, comma-separated. Report the four counts (input, output, cache write, cache read) as tokens, not money.
+
 ## Citing back to the user
 
 Format: `Last time you hit this (cc/32e869ac:319), you …`. The user
