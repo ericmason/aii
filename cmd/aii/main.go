@@ -155,7 +155,13 @@ func cmdIndex(ctx context.Context, args []string) error {
 
 	// One indexer at a time. Cron + manual + background-spawned runs
 	// would otherwise contend on the single SQLite writer.
-	release, ok, otherPID := acquireIndexLock()
+	release, ok, otherPID, err := acquireIndexLock()
+	if err != nil {
+		// Not "someone else is indexing" — the lock itself could not be
+		// evaluated. Fail loudly, including under --quiet, so a
+		// scheduled run that can never index says why.
+		return fmt.Errorf("index lock: %w", err)
+	}
 	if !ok {
 		if !*quiet {
 			fmt.Printf("another indexer is running (pid %d); skipping\n", otherPID)

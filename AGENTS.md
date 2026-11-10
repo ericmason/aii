@@ -176,6 +176,65 @@ or whatever states the condition directly. `errEmptyValue` and
 `errNoItemTable` in `internal/source/cursor/cursor.go` are the
 examples.
 
+### The index lock
+
+One indexer runs at a time. `acquireIndexLock` in `cmd/aii/autoindex.go`
+holds an exclusive advisory lock on `.index.lock` (`flock` on unix,
+`LockFileEx` on Windows — `cmd/aii/filelock_*.go`) for the whole run, so
+the kernel releases it when the process exits or is killed. Two rules
+keep it sound:
+
+- **Never unlink the lock file.** One process can lock an unlinked inode
+  while another locks a new file at the same path, and both would run.
+  Release truncates the file instead.
+- **The PID in the file is for display only.** `aii cron status` prints
+  it. Deciding ownership from a PID's liveness is what let two runs that
+  both saw a dead PID remove the file and each claim the lock. The one
+  exception is the transitional block in `acquireIndexLock`, which
+  stands aside while the file names another live process because aii
+  0.6.0 and earlier took no advisory lock; delete it, and its twin in
+  `indexLocked`, once no such binary is in use. A process that exited
+  but has not been reaped still has a process table entry, so a zombie
+  indexer reads as live and costs a skipped interval until its parent
+  reaps it.
+- **"The lock cannot be evaluated" is a third outcome, never "held".**
+  `acquireIndexLock` and `indexLocked` return an error for a lock file
+  they cannot open and for a filesystem whose locks fail (ENOLCK,
+  ENOTSUP). Folding that into "another indexer is running" stops
+  scheduled indexing silently, because `--quiet` hides the message and
+  the exit status stays 0. `aii index` returns the error; `aii cron
+  status` prints `Lock:  unknown`.
+- **Probe with a shared lock, and retry before giving up.**
+  `aii cron status` must not make a scheduled run skip its interval, so
+  the probe takes `LOCK_SH` and `acquireIndexLock` retries for
+  `lockRetryWindow` before concluding the lock is held.
+- **On Windows the lock covers one byte past the end of the file**, not
+  the whole range. Windows byte-range locks are mandatory: locking the
+  range that holds the PID would make every other handle's read fail,
+  and `aii cron status` would report pid 0 for every running indexer.
+
+### The scheduled job's environment
+
+Everything about a scheduled run follows from the DB path: which
+database it indexes, and which `cron.log` it writes and trims. The
+installer takes that path from `AII_DB`, so `buildLaunchdPlist`,
+`cronLine`, and `schtasksAction` all pass `AII_DB` to the job when it is
+set. Add any further environment the indexer needs to all three.
+
+Three rules go with that:
+
+- **Resolve the path at install time.** `dbEnvOverride` and `dataDir`
+  return absolute paths, because launchd runs the job from `/` and cron
+  from `$HOME`, so a relative `AII_DB` would send the job elsewhere.
+- **Quote every path, not just the new one.** The crontab line runs
+  through `/bin/sh`, so the binary's path and the log's path go through
+  `shellQuote` along with the database's. `shellQuote` also escapes `%`,
+  which cron reads as a newline.
+- **Refuse a command Task Scheduler would mangle.** `schtasksAction`
+  rejects a `%` in the path, which `cmd` expands even inside quotes with
+  no escape available on a command line, and a command over the
+  documented 262-character `/TR` limit.
+
 `aii index` trims `cron.log` to its last 1 MiB once it passes 8 MiB
 (`trimLogFile` in `cmd/aii/cron.go`). The trim rewrites the file in
 place, because launchd and the crontab `>>` redirect both hold it open
