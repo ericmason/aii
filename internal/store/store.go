@@ -43,6 +43,13 @@ type IndexState struct {
 	Size        int64
 	LastOffset  int64
 	Fingerprint string
+
+	// NeedsReindex marks a file whose last batch never reached the
+	// database, so its stored state describes less than the file holds.
+	// Sources treat it like --full for that file: reparse from the
+	// start and replace what is stored. SaveState clears it, so a
+	// successful batch retires the mark.
+	NeedsReindex bool
 }
 
 type DB struct {
@@ -54,6 +61,11 @@ type DB struct {
 	hasSearchIndex atomic.Bool
 }
 
+// BusyTimeout is how long a statement waits for another connection to
+// release the write lock before it fails with SQLITE_BUSY. Set it
+// before Open; tests lower it to reach the retry paths quickly.
+var BusyTimeout = 5 * time.Second
+
 func DefaultPath() string {
 	if p := os.Getenv("AII_DB"); p != "" {
 		return p
@@ -62,11 +74,30 @@ func DefaultPath() string {
 	return filepath.Join(home, ".local", "share", "aii", "aii.db")
 }
 
-func Open(path string) (*DB, error) {
+// Open opens the database for querying. It applies the cheap, bounded
+// schema migrations and nothing else: the one-off rebuilds that scan
+// every message — the trigram index rebuild and the search covering
+// index — belong to OpenForIndex.
+//
+// That split exists because those rebuilds take minutes on a large
+// database and hold SQLite's single write lock while they run. A query
+// command that did them would stall the indexer, whose batches fail
+// with SQLITE_BUSY once busy_timeout expires.
+func Open(path string) (*DB, error) { return open(path, false) }
+
+// OpenForIndex opens the database for an index run and completes the
+// one-off rebuilds Open skips. Call it only while holding the index
+// lock, so the process doing the rebuild is also the only writer.
+// Each rebuild is skipped, not waited on, when another process holds
+// the write lock.
+func OpenForIndex(path string) (*DB, error) { return open(path, true) }
+
+func open(path string, rebuild bool) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)", path)
+	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(%d)",
+		path, BusyTimeout.Milliseconds())
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -80,6 +111,7 @@ func Open(path string) (*DB, error) {
 	for _, alter := range []string{
 		`ALTER TABLE sessions ADD COLUMN summary TEXT`,
 		`ALTER TABLE token_usage ADD COLUMN seq INTEGER`,
+		`ALTER TABLE index_state ADD COLUMN needs_reindex INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
@@ -90,14 +122,16 @@ func Open(path string) (*DB, error) {
 	// Trigram FTS migration: CREATE TRIGGER IF NOT EXISTS won't replace the
 	// old two-table triggers with the three-table version, and an existing
 	// messages_fts_tri will be empty for legacy DBs. Detect and fix both.
-	if err := migrateTrigram(db); err != nil {
+	if err := migrateTrigram(db, rebuild); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate trigram: %w", err)
 	}
 
-	if err := ensureSearchIndex(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("create search index: %w", err)
+	if rebuild {
+		if err := ensureSearchIndex(db); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("create search index: %w", err)
+		}
 	}
 
 	return &DB{DB: db}, nil
@@ -106,27 +140,37 @@ func Open(path string) (*DB, error) {
 // ensureSearchIndex creates the covering index Search uses, if it is
 // missing. On a large existing database the first build takes minutes
 // and holds the write lock. When another process holds that lock (for
-// example, because it is building the index), Open does not wait: it
-// skips the build and Search runs without the index until a later Open
-// builds it.
+// example, because it is building the index), OpenForIndex does not
+// wait: it skips the build and Search runs without the index until a
+// later index run builds it.
 func ensureSearchIndex(db *sql.DB) error {
 	exists, err := indexExists(db, searchIndexName)
 	if err != nil || exists {
 		return err
 	}
-	// Open caps the pool at one connection, so these pragmas apply to the
-	// connection that runs the CREATE INDEX.
+	_, err = rebuildWithoutWaiting(db, searchIndexSQL)
+	return err
+}
+
+// rebuildWithoutWaiting runs one long write with the wait for the lock
+// disabled, and reports whether it ran. A rebuild that would have to
+// wait is skipped instead: waiting here fails the open, and a later
+// index run will do it.
+//
+// Open caps the pool at one connection, so the pragmas apply to the
+// connection that runs the statement.
+func rebuildWithoutWaiting(db *sql.DB, stmt string) (ran bool, err error) {
 	if _, err := db.Exec(`PRAGMA busy_timeout = 0`); err != nil {
-		return err
+		return false, err
 	}
-	_, err = db.Exec(searchIndexSQL)
-	if _, rerr := db.Exec(`PRAGMA busy_timeout = 5000`); rerr != nil && err == nil {
+	_, err = db.Exec(stmt)
+	if _, rerr := db.Exec(fmt.Sprintf(`PRAGMA busy_timeout = %d`, BusyTimeout.Milliseconds())); rerr != nil && err == nil {
 		err = rerr
 	}
 	if isBusy(err) {
-		return nil
+		return false, nil
 	}
-	return err
+	return err == nil, err
 }
 
 // indexExists reports whether the named index is in the schema.
@@ -137,6 +181,11 @@ func indexExists(db interface {
 	err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, name).Scan(&n)
 	return n > 0, err
 }
+
+// IsBusy reports whether err means another connection holds the lock
+// the statement needed — SQLITE_BUSY or SQLITE_LOCKED. Callers outside
+// the store use it to decide whether a write is worth retrying.
+func IsBusy(err error) bool { return isBusy(err) }
 
 // isBusy reports whether err is SQLITE_BUSY or SQLITE_LOCKED, including
 // their extended codes.
@@ -149,10 +198,15 @@ func isBusy(err error) bool {
 	return code == sqlite3.SQLITE_BUSY || code == sqlite3.SQLITE_LOCKED
 }
 
-// migrateTrigram brings old DBs up to the two-FTS-table schema: replaces
-// the message triggers to also feed messages_fts_tri, and rebuilds the
-// trigram index if it's empty but messages is not.
-func migrateTrigram(db *sql.DB) error {
+// migrateTrigram brings old DBs up to the two-FTS-table schema: it
+// replaces the message triggers so they also feed messages_fts_tri,
+// and, with rebuild set, rebuilds the trigram index when it holds
+// fewer documents than the messages table.
+//
+// Rewiring the triggers is DDL and costs nothing. The rebuild reads
+// every message and holds the write lock for minutes on a large
+// database, so only an index run asks for it.
+func migrateTrigram(db *sql.DB, rebuild bool) error {
 	var triggerSQL sql.NullString
 	row := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='trigger' AND name='messages_ai'`)
 	if err := row.Scan(&triggerSQL); err != nil && err != sql.ErrNoRows {
@@ -185,28 +239,73 @@ func migrateTrigram(db *sql.DB) error {
 		}
 	}
 
-	// An external-content FTS5 table delegates COUNT(*) to the content
-	// table, so it can't tell us whether the index is populated. The
-	// shadow `_docsize` table is only written to as documents are
-	// actually indexed — that's the real source of truth.
-	var indexedDocs, msgCount int64
-	if err := db.QueryRow(`SELECT COUNT(*) FROM messages_fts_tri_docsize`).Scan(&indexedDocs); err != nil {
+	if !rebuild {
+		return nil
+	}
+	stale, err := trigramIndexStale(db)
+	if err != nil {
 		return err
 	}
-	if err := db.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&msgCount); err != nil {
-		return err
-	}
-	if indexedDocs < msgCount {
-		if _, err := db.Exec(`INSERT INTO messages_fts_tri(messages_fts_tri) VALUES('rebuild')`); err != nil {
+	if stale {
+		if _, err := rebuildWithoutWaiting(db, `INSERT INTO messages_fts_tri(messages_fts_tri) VALUES('rebuild')`); err != nil {
 			return fmt.Errorf("rebuild trigram index: %w", err)
 		}
 	}
 	return nil
 }
 
-// UpsertSession returns the session row id.
+// trigramIndexStale reports whether messages_fts_tri holds fewer
+// documents than the messages table.
+//
+// An external-content FTS5 table delegates COUNT(*) to the content
+// table, so it can't say whether the index is populated. The shadow
+// `_docsize` table gains a row only as a document is indexed, so it is
+// the real source of truth.
+//
+// Both counts come from one transaction, which SQLite serves from a
+// single read snapshot. Counted in separate statements, a writer that
+// inserts messages in between makes a current index look stale, and
+// the rebuild that follows reads every message while holding the write
+// lock — long enough for the indexer's own batches to fail with
+// SQLITE_BUSY.
+func trigramIndexStale(db *sql.DB) (bool, error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var indexedDocs, msgCount int64
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM messages_fts_tri_docsize`).Scan(&indexedDocs); err != nil {
+		return false, err
+	}
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&msgCount); err != nil {
+		return false, err
+	}
+	return indexedDocs < msgCount, nil
+}
+
+// UpsertSession returns the session row id. It runs in its own
+// transaction; a caller that writes a whole batch atomically uses
+// UpsertSessionTx instead.
 func (d *DB) UpsertSession(s *Session) (int64, error) {
-	_, err := d.Exec(`
+	tx, err := d.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	id, err := d.UpsertSessionTx(tx, s)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+// UpsertSessionTx is UpsertSession inside the caller's transaction.
+func (d *DB) UpsertSessionTx(tx *sql.Tx, s *Session) (int64, error) {
+	_, err := tx.Exec(`
         INSERT INTO sessions (agent, session_uid, workspace, title, summary, started_at, ended_at, source_path, source_mtime_ns, source_size)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(agent, session_uid) DO UPDATE SET
@@ -225,7 +324,7 @@ func (d *DB) UpsertSession(s *Session) (int64, error) {
 		return 0, err
 	}
 	var id int64
-	if err := d.QueryRow(`SELECT id FROM sessions WHERE agent = ? AND session_uid = ?`, s.Agent, s.UID).Scan(&id); err != nil {
+	if err := tx.QueryRow(`SELECT id FROM sessions WHERE agent = ? AND session_uid = ?`, s.Agent, s.UID).Scan(&id); err != nil {
 		return 0, err
 	}
 	return id, nil
@@ -263,10 +362,11 @@ func (d *DB) NextOrdinal(sessionID int64) (int, error) {
 }
 
 func (d *DB) GetState(path string) (*IndexState, error) {
-	row := d.QueryRow(`SELECT source_path, mtime_ns, size, last_offset, COALESCE(fingerprint, '')
+	row := d.QueryRow(`SELECT source_path, mtime_ns, size, last_offset, COALESCE(fingerprint, ''),
+                              COALESCE(needs_reindex, 0)
                        FROM index_state WHERE source_path = ?`, path)
 	s := &IndexState{}
-	err := row.Scan(&s.SourcePath, &s.MtimeNs, &s.Size, &s.LastOffset, &s.Fingerprint)
+	err := row.Scan(&s.SourcePath, &s.MtimeNs, &s.Size, &s.LastOffset, &s.Fingerprint, &s.NeedsReindex)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -276,16 +376,41 @@ func (d *DB) GetState(path string) (*IndexState, error) {
 	return s, nil
 }
 
+// SaveState records what has been indexed for one file and clears any
+// reindex mark, since the state now matches what the database holds.
 func (d *DB) SaveState(s IndexState) error {
-	_, err := d.Exec(`
-        INSERT INTO index_state (source_path, mtime_ns, size, last_offset, fingerprint)
-        VALUES (?, ?, ?, ?, ?)
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := d.SaveStateTx(tx, s); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// SaveStateTx is SaveState inside the caller's transaction.
+func (d *DB) SaveStateTx(tx *sql.Tx, s IndexState) error {
+	_, err := tx.Exec(`
+        INSERT INTO index_state (source_path, mtime_ns, size, last_offset, fingerprint, needs_reindex)
+        VALUES (?, ?, ?, ?, ?, 0)
         ON CONFLICT(source_path) DO UPDATE SET
-            mtime_ns    = excluded.mtime_ns,
-            size        = excluded.size,
-            last_offset = excluded.last_offset,
-            fingerprint = excluded.fingerprint`,
+            mtime_ns      = excluded.mtime_ns,
+            size          = excluded.size,
+            last_offset   = excluded.last_offset,
+            fingerprint   = excluded.fingerprint,
+            needs_reindex = 0`,
 		s.SourcePath, s.MtimeNs, s.Size, s.LastOffset, s.Fingerprint)
+	return err
+}
+
+// MarkNeedsReindex flags a file whose batch never reached the database,
+// so the next run reparses it from the start instead of trusting the
+// stored mtime and size and skipping it. A file with no state row needs
+// no mark: the next run reads it from scratch anyway.
+func (d *DB) MarkNeedsReindex(path string) error {
+	_, err := d.Exec(`UPDATE index_state SET needs_reindex = 1 WHERE source_path = ?`, path)
 	return err
 }
 
@@ -298,19 +423,34 @@ func (d *DB) DeleteBySourcePath(path string) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM sessions WHERE source_path = ?`, path); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM index_state WHERE source_path = ?`, path); err != nil {
+	if err := d.DeleteBySourcePathTx(tx, path); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// DeleteBySourcePathTx is DeleteBySourcePath inside the caller's
+// transaction.
+func (d *DB) DeleteBySourcePathTx(tx *sql.Tx, path string) error {
+	if _, err := tx.Exec(`DELETE FROM sessions WHERE source_path = ?`, path); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`DELETE FROM index_state WHERE source_path = ?`, path)
+	return err
 }
 
 // DeleteSessionAtPath deletes one session (and, by cascade, its messages)
 // if it is stored for the given source file. Token usage is left alone.
 func (d *DB) DeleteSessionAtPath(agent, sessionUID, path string) error {
 	_, err := d.Exec(`DELETE FROM sessions WHERE agent = ? AND session_uid = ? AND source_path = ?`,
+		agent, sessionUID, path)
+	return err
+}
+
+// DeleteSessionAtPathTx is DeleteSessionAtPath inside the caller's
+// transaction.
+func (d *DB) DeleteSessionAtPathTx(tx *sql.Tx, agent, sessionUID, path string) error {
+	_, err := tx.Exec(`DELETE FROM sessions WHERE agent = ? AND session_uid = ? AND source_path = ?`,
 		agent, sessionUID, path)
 	return err
 }

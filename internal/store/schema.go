@@ -60,12 +60,17 @@ CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
     INSERT INTO messages_fts_tri(rowid, content) VALUES (new.id, new.content);
 END;
 
+-- needs_reindex marks a file whose batch never reached the database.
+-- Its mtime and size still describe the file, so the usual "unchanged
+-- since last run" check would skip it; sources reparse a marked file
+-- from the start instead.
 CREATE TABLE IF NOT EXISTS index_state (
-    source_path TEXT PRIMARY KEY,
-    mtime_ns    INTEGER NOT NULL,
-    size        INTEGER NOT NULL,
-    last_offset INTEGER NOT NULL DEFAULT 0,
-    fingerprint TEXT
+    source_path   TEXT PRIMARY KEY,
+    mtime_ns      INTEGER NOT NULL,
+    size          INTEGER NOT NULL,
+    last_offset   INTEGER NOT NULL DEFAULT 0,
+    fingerprint   TEXT,
+    needs_reindex INTEGER NOT NULL DEFAULT 0
 );
 
 -- One row per model API request (or, for agents that log running totals,

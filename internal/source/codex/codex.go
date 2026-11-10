@@ -196,6 +196,7 @@ func (s *Source) scanRolloutFile(ctx context.Context, db *store.DB, full bool, o
 	if err != nil {
 		return fmt.Errorf("get state: %w", err)
 	}
+	full = srcpkg.FullForFile(full, prev)
 
 	truncate := false
 	startOffset := int64(0)
@@ -654,6 +655,7 @@ func (s *Source) scanHistory(ctx context.Context, db *store.DB, full bool, out c
 	if err != nil {
 		return fmt.Errorf("get state: %w", err)
 	}
+	full = srcpkg.FullForFile(full, prev)
 
 	truncate := false
 	startOffset := int64(0)

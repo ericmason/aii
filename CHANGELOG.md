@@ -8,6 +8,41 @@ called out under **Changed** when they happen.
 
 ## [Unreleased]
 
+### Fixed
+- `aii index` no longer loses sessions when another aii command is
+  running. A query command used to rebuild the trigram index and the
+  search covering index on open, which reads every message and holds
+  SQLite's write lock for minutes on a large database; every batch the
+  index run tried to write in that window failed with `database is
+  locked (SQLITE_BUSY)`, was logged, and was dropped. Those rebuilds
+  now belong to `aii index`, which runs them while it holds the index
+  lock.
+- The check for a stale trigram index no longer fires spuriously. It
+  compared two counts read in separate statements, so a concurrent
+  writer inserting between them made a current index look empty and
+  triggered a full rebuild.
+- A batch `aii index` cannot write is retried, and then recorded
+  instead of dropped: the file is marked so the next run reads it from
+  the start, even though its size and modification time have not
+  changed. Before, the next incremental run skipped the file as
+  unchanged and its messages and token usage were never indexed.
+- Each batch is now written in one transaction. A batch that failed
+  partway through used to leave the sessions it had already deleted
+  gone, along with the file's index state.
+- `aii index` exits non-zero and names the files when it cannot write
+  a batch, and its summary line reports how many batches were deferred.
+- A deferred batch now marks the file its parser reads back, so Aider
+  sessions and migrated Gemini CLI and GitHub Copilot sessions recover
+  on the next run. Aider files one batch per chat inside a history
+  file, and Gemini and Copilot file one for a session's previous path
+  when the session moves from `.json` to `.jsonl`; a mark on those keys
+  was read by nobody, so an Aider chat stayed missing and a migrated
+  session kept serving its old messages.
+- An `aii index` run no longer fails when the trigram index needs a
+  rebuild and another process holds the write lock. The rebuild is
+  skipped, as the search covering index already was, and a later run
+  does it.
+
 ## [0.6.1] - 2026-11-10
 
 ### Fixed

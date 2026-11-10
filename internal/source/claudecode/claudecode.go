@@ -138,6 +138,7 @@ func (s *Source) scanFile(ctx context.Context, db *store.DB, path string, full, 
 	if err != nil {
 		return fmt.Errorf("get state: %w", err)
 	}
+	full = source.FullForFile(full, prev)
 
 	var startOffset int64
 	truncate := false

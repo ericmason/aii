@@ -158,6 +158,7 @@ func scanFile(ctx context.Context, db *store.DB, file string, full bool, out cha
 	if err != nil {
 		return fmt.Errorf("get state: %w", err)
 	}
+	full = source.FullForFile(full, prev)
 	if !full && prev != nil && prev.Size == size && prev.MtimeNs == mtimeNs {
 		return nil
 	}
@@ -196,7 +197,10 @@ func scanFile(ctx context.Context, db *store.DB, file string, full bool, out cha
 		// session. If the session was indexed from another file, replace
 		// those rows instead of adding to them.
 		if existing, err := db.SessionByUID(agentName, sess.SessionID); err == nil && existing != nil && existing.SourcePath != abs {
-			b := source.Batch{State: store.IndexState{SourcePath: existing.SourcePath}, Truncate: true}
+			// The delete belongs to the old path, but the file being
+			// read is this one: mark it, or the stale rows survive and
+			// win under ON CONFLICT DO NOTHING.
+			b := source.Batch{State: store.IndexState{SourcePath: existing.SourcePath}, Truncate: true, ReindexKey: abs}
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
