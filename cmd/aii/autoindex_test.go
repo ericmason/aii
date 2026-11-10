@@ -240,4 +240,10 @@ func TestIndexLocked_AfterRelease(t *testing.T) {
 	if pid != 0 {
 		t.Errorf("pid = %d, want 0 after release clears it", pid)
 	}
+	// Release truncates the file and leaves it in place. Unlinking it
+	// would let one process lock the unlinked inode while another locks
+	// a new file at the same path, and both would index.
+	if _, err := os.Stat(lockPath()); err != nil {
+		t.Errorf("release should keep the lock file: %v", err)
+	}
 }
