@@ -2,19 +2,18 @@ package main
 
 // Indexer locking and stamp primitives. The indexer is a single-writer
 // process (SQLite) so both the cron job and manual `aii index` runs
-// share this PID lockfile to avoid racing each other. The stamp file
-// records the last successful index so `aii cron status` can report
-// freshness.
+// take an exclusive advisory lock on the same lock file to avoid racing
+// each other; the file also carries the holder's PID for display. The
+// stamp file records the last successful index so `aii cron status` can
+// report freshness.
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/ericmason/aii/internal/store"
@@ -58,58 +57,82 @@ func markIndexed() {
 	f.Close()
 }
 
-// acquireIndexLock atomically claims the per-DB index lock. Returns a
-// release function (idempotent) and ok=true on success. ok=false means
-// another indexer holds it; the returned PID is informational.
+// acquireIndexLock claims the per-DB index lock. Returns a release
+// function (idempotent) and ok=true on success. ok=false means another
+// indexer holds it; the returned PID is informational and is 0 when the
+// holder wrote no PID.
 //
-// Stale locks (lockfile present, owning PID dead) are silently reaped
-// and re-acquired — common after a crash or kill -9.
+// Ownership is an exclusive advisory lock (flock on unix, LockFileEx on
+// Windows) held on the lock file for the life of the run. The kernel
+// owns the lock's lifecycle, so a crashed or `kill -9`'d indexer
+// releases it with no stale-lock reaping and no window where two
+// processes both decide the other is dead.
+//
+// The lock file itself is never removed. Unlinking it would let one
+// process lock the unlinked inode while another locks a freshly created
+// file at the same path, and both would run. Release truncates the file
+// instead, which leaves it present and empty.
 func acquireIndexLock() (release func(), ok bool, otherPID int) {
 	if err := os.MkdirAll(dataDir(), 0o755); err != nil {
 		return func() {}, false, 0
 	}
-	for attempt := 0; attempt < 2; attempt++ {
-		f, err := os.OpenFile(lockPath(), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
-			fmt.Fprintf(f, "%d\n", os.Getpid())
-			f.Close()
-			released := false
-			return func() {
-				if released {
-					return
-				}
-				released = true
-				_ = os.Remove(lockPath())
-			}, true, 0
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return func() {}, false, 0
-		}
-		// Lock exists. Check if owner is alive.
+	f, err := os.OpenFile(lockPath(), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return func() {}, false, 0
+	}
+	locked, err := tryLockFile(f)
+	if err != nil || !locked {
+		// Read the holder's PID for the message, not for a decision.
 		pid := readLockPID()
-		if pid > 0 && processAlive(pid) {
-			return func() {}, false, pid
+		f.Close()
+		return func() {}, false, pid
+	}
+
+	// We own the run. Record our PID so `aii cron status` and anything
+	// else reading the file can name the process.
+	_ = f.Truncate(0)
+	if _, err := f.WriteAt([]byte(strconv.Itoa(os.Getpid())+"\n"), 0); err == nil {
+		_ = f.Sync()
+	}
+
+	released := false
+	return func() {
+		if released {
+			return
 		}
-		// Stale — owner gone. Remove and retry once.
-		_ = os.Remove(lockPath())
-	}
-	return func() {}, false, 0
+		released = true
+		// Clear the PID first: once the lock is gone the file is up for
+		// grabs, and a leftover PID would misreport the holder.
+		_ = f.Truncate(0)
+		_ = unlockFile(f)
+		f.Close()
+	}, true, 0
 }
 
-// indexLocked reports whether the lock is currently held by a live
-// process — without trying to acquire it. Used by `aii cron status`.
+// indexLocked reports whether an indexer holds the lock right now,
+// along with the PID it recorded. Used by `aii cron status`. It answers
+// by trying to take the lock and releasing it again, so it never blocks
+// and never reports a crashed indexer as running.
 func indexLocked() (bool, int) {
-	pid := readLockPID()
-	if pid <= 0 {
+	f, err := os.OpenFile(lockPath(), os.O_RDWR, 0o600)
+	if err != nil {
 		return false, 0
 	}
-	if !processAlive(pid) {
-		_ = os.Remove(lockPath())
+	defer f.Close()
+	locked, err := tryLockFile(f)
+	if err != nil {
 		return false, 0
 	}
-	return true, pid
+	if locked {
+		_ = unlockFile(f)
+		return false, 0
+	}
+	return true, readLockPID()
 }
 
+// readLockPID returns the PID the current lock holder recorded, or 0
+// when the file is missing or empty. It says nothing about whether the
+// lock is held — only tryLockFile answers that.
 func readLockPID() int {
 	b, err := os.ReadFile(lockPath())
 	if err != nil {
@@ -117,22 +140,4 @@ func readLockPID() int {
 	}
 	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
 	return pid
-}
-
-// processAlive checks whether a PID is still live. signal 0 is the
-// portable "are you there?" probe — it returns ESRCH if the process is
-// gone and EPERM if it exists but we don't own it (still alive).
-func processAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	err = p.Signal(syscall.Signal(0))
-	if err == nil {
-		return true
-	}
-	return errors.Is(err, syscall.EPERM)
 }

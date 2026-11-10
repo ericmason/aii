@@ -17,6 +17,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"errors"
 	"flag"
 	"fmt"
@@ -367,11 +368,36 @@ func statusLaunchd() error {
 	return nil
 }
 
+// dbEnvOverride returns the AII_DB value the scheduled job has to
+// inherit, or "" when the installer is using the default DB. Everything
+// about a scheduled run is derived from the DB path: which database it
+// indexes, and which cron.log it writes and trims. The installer reads
+// that path from AII_DB, so the job has to see the same value.
+func dbEnvOverride() string { return os.Getenv("AII_DB") }
+
+// xmlString escapes s for use inside a plist <string> element.
+func xmlString(s string) string {
+	var b bytes.Buffer
+	_ = xml.EscapeText(&b, []byte(s))
+	return b.String()
+}
+
 // buildLaunchdPlist composes a minimal LaunchAgent that runs
 // `aii index --quiet` every intervalSeconds. Output goes to a log file
-// next to the DB so you can `tail -f` it if something looks off.
+// next to the DB so you can `tail -f` it if something looks off. When
+// the installer runs with AII_DB set, the plist passes that same value
+// to the job through EnvironmentVariables.
 func buildLaunchdPlist(exe string, intervalSeconds int) string {
 	logPath := cronLogPath()
+	env := ""
+	if db := dbEnvOverride(); db != "" {
+		env = fmt.Sprintf(`  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AII_DB</key>
+    <string>%s</string>
+  </dict>
+`, xmlString(db))
+	}
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -388,16 +414,29 @@ func buildLaunchdPlist(exe string, intervalSeconds int) string {
   <integer>%d</integer>
   <key>RunAtLoad</key>
   <true/>
-  <key>StandardOutPath</key>
+%s  <key>StandardOutPath</key>
   <string>%s</string>
   <key>StandardErrorPath</key>
   <string>%s</string>
 </dict>
 </plist>
-`, launchdLabel, exe, intervalSeconds, logPath, logPath)
+`, launchdLabel, xmlString(exe), intervalSeconds, env, xmlString(logPath), xmlString(logPath))
 }
 
 // --- schtasks (Windows) ------------------------------------------------
+
+// schtasksAction builds the command string for schtasks /TR. /TR takes
+// a single command, so the exe is quoted for paths with spaces (e.g.
+// "C:\Program Files\aii\aii.exe"). With a db path, the command runs
+// through `cmd /c` so the task can set AII_DB first; `set "NAME=value"`
+// keeps the value's spaces and trailing characters out of the variable
+// name and is safe for paths that contain `&` or `(`.
+func schtasksAction(exe, db string) string {
+	if db == "" {
+		return fmt.Sprintf(`"%s" index --quiet`, exe)
+	}
+	return fmt.Sprintf(`cmd /c set "AII_DB=%s" && "%s" index --quiet`, db, exe)
+}
 
 // installSchtasks registers a Task Scheduler task that runs
 // `aii index --quiet` every N minutes. schtasks /SC MINUTE caps /MO at
@@ -413,9 +452,7 @@ func installSchtasks(exe string, intervalSeconds int) error {
 		fmt.Fprintf(os.Stderr, "warning: %dm exceeds schtasks /SC MINUTE cap; capping at %dm\n", mins, schtasksMaxMinute)
 		mins = schtasksMaxMinute
 	}
-	// /TR takes a single command string. Quote the exe so paths with
-	// spaces (e.g. "C:\Program Files\aii\aii.exe") parse correctly.
-	action := fmt.Sprintf(`"%s" index --quiet`, exe)
+	action := schtasksAction(exe, dbEnvOverride())
 	out, err := exec.Command("schtasks",
 		"/Create", "/F",
 		"/SC", "MINUTE",
@@ -547,6 +584,23 @@ func stripAiiCronLines(s string) string {
 	return strings.Join(out, "\n")
 }
 
+// shellQuote wraps s in single quotes for /bin/sh, which is what cron
+// runs the command with. A `%` in a crontab command means newline, so
+// it is escaped too.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(strings.ReplaceAll(s, "'", `'\''`), "%", `\%`) + "'"
+}
+
+// cronEnvPrefix returns the shell assignment that hands the job the
+// installer's AII_DB, with a trailing space, or "" on a default DB.
+func cronEnvPrefix() string {
+	db := dbEnvOverride()
+	if db == "" {
+		return ""
+	}
+	return "AII_DB=" + shellQuote(db) + " "
+}
+
 // cronLine produces a 5-field crontab spec (m h dom mon dow) that runs
 // the indexer at the requested interval. Sub-minute intervals can't be
 // expressed in classic cron, so we round up to 1 minute and warn.
@@ -557,18 +611,19 @@ func cronLine(exe string, intervalSeconds int) (string, error) {
 		mins = 1
 	}
 	logPath := cronLogPath()
+	env := cronEnvPrefix()
 	if mins == 1 {
-		return fmt.Sprintf("* * * * * %s index --quiet >> %s 2>&1", exe, logPath), nil
+		return fmt.Sprintf("* * * * * %s%s index --quiet >> %s 2>&1", env, exe, logPath), nil
 	}
 	if 60%mins == 0 {
-		return fmt.Sprintf("*/%d * * * * %s index --quiet >> %s 2>&1", mins, exe, logPath), nil
+		return fmt.Sprintf("*/%d * * * * %s%s index --quiet >> %s 2>&1", mins, env, exe, logPath), nil
 	}
 	// Non-divisor of 60 (e.g. 7m): use closest divisor that doesn't lie
 	// about cadence. Cron's */N skips the 60-min boundary, which is fine
 	// for "occasional indexing" — pick the nearest divisor.
 	chosen := nearestDivisor(60, mins)
 	fmt.Fprintf(os.Stderr, "warning: %dm doesn't divide 60 — using */%d for an even cadence\n", mins, chosen)
-	return fmt.Sprintf("*/%d * * * * %s index --quiet >> %s 2>&1", chosen, exe, logPath), nil
+	return fmt.Sprintf("*/%d * * * * %s%s index --quiet >> %s 2>&1", chosen, env, exe, logPath), nil
 }
 
 func nearestDivisor(n, target int) int {

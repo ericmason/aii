@@ -176,6 +176,29 @@ or whatever states the condition directly. `errEmptyValue` and
 `errNoItemTable` in `internal/source/cursor/cursor.go` are the
 examples.
 
+### The index lock
+
+One indexer runs at a time. `acquireIndexLock` in `cmd/aii/autoindex.go`
+holds an exclusive advisory lock on `.index.lock` (`flock` on unix,
+`LockFileEx` on Windows — `cmd/aii/filelock_*.go`) for the whole run, so
+the kernel releases it when the process exits or is killed. Two rules
+keep it sound:
+
+- **Never unlink the lock file.** One process can lock an unlinked inode
+  while another locks a new file at the same path, and both would run.
+  Release truncates the file instead.
+- **The PID in the file is for display only.** `aii cron status` prints
+  it. Deciding ownership from a PID's liveness is what let two runs that
+  both saw a dead PID remove the file and each claim the lock.
+
+### The scheduled job's environment
+
+Everything about a scheduled run follows from the DB path: which
+database it indexes, and which `cron.log` it writes and trims. The
+installer takes that path from `AII_DB`, so `buildLaunchdPlist`,
+`cronLine`, and `schtasksAction` all pass `AII_DB` to the job when it is
+set. Add any further environment the indexer needs to all three.
+
 `aii index` trims `cron.log` to its last 1 MiB once it passes 8 MiB
 (`trimLogFile` in `cmd/aii/cron.go`). The trim rewrites the file in
 place, because launchd and the crontab `>>` redirect both hold it open
