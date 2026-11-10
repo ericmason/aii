@@ -197,6 +197,14 @@ func indexLocked() (locked bool, pid int, err error) {
 		return false, 0, fmt.Errorf("open lock file %s: %w", lockPath(), err)
 	}
 	defer f.Close()
+	// A directory opens and locks fine on unix, and would read as a free
+	// lock, while `aii index` cannot open it at all. Anything but a
+	// regular file is a lock we cannot evaluate, not a free one.
+	if st, serr := f.Stat(); serr != nil {
+		return false, 0, fmt.Errorf("stat lock file %s: %w", lockPath(), serr)
+	} else if !st.Mode().IsRegular() {
+		return false, 0, fmt.Errorf("lock file %s is not a regular file", lockPath())
+	}
 	free, err := tryLockFile(f, false)
 	if err != nil {
 		return false, 0, fmt.Errorf("lock %s: %w", lockPath(), err)

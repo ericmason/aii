@@ -283,6 +283,19 @@ func TestAcquireIndexLock_UnreadableLockPath(t *testing.T) {
 	if err := cmdIndex(t.Context(), []string{"--quiet"}); err == nil {
 		t.Error("aii index --quiet should fail when the lock cannot be evaluated")
 	}
+
+	// `aii cron status` must not call it free either. A directory opens
+	// and flocks fine on unix, so only the file type gives it away.
+	locked, pid, err := indexLocked()
+	if err == nil {
+		t.Error("indexLocked should report an error for a lock path that is not a regular file")
+	}
+	if locked || pid != 0 {
+		t.Errorf("indexLocked() = (%v, %d), want (false, 0) alongside the error", locked, pid)
+	}
+	if line := lockStatusLine(); !strings.HasPrefix(line, "Lock:  unknown") {
+		t.Errorf("status line = %q, want a Lock:  unknown line", line)
+	}
 }
 
 func TestIndexLocked_Live(t *testing.T) {
