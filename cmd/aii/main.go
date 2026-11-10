@@ -164,6 +164,11 @@ func cmdIndex(ctx context.Context, args []string) error {
 	}
 	defer release()
 
+	// The scheduler appends every run's output to cron.log and never
+	// shortens it. Keep it inside its size cap before this run adds to
+	// it. Safe under the index lock: no other run is writing.
+	trimCronLog()
+
 	db, err := store.Open(store.DefaultPath())
 	if err != nil {
 		return err

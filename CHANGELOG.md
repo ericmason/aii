@@ -36,6 +36,24 @@ called out under **Changed** when they happen.
 
 ### Fixed
 - A forked Codex session (one started with `forked_from_id`, such as a Codex subagent) is now indexed as its own session. Before, its messages were added to the parent session, because the rollout repeats the parent's `session_meta` record. The next time aii reads a forked rollout that grew, it moves the fork's messages to the fork's own session; run `aii index --source codex --full` to split every session indexed before this fix.
+- The scheduler's log, `~/.local/share/aii/cron.log`, no longer grows
+  without bound. Two changes keep it small. Every `aii index` run first
+  trims the log to its last 1 MiB once it passes 8 MiB, leaving a
+  marker line where the older entries were; `aii cron status` now shows
+  the log's path and current size. And indexing Cursor no longer writes
+  a line per composer it skips: a scan that walked past thousands of
+  empty Cursor records wrote thousands of
+  `parse composerData: empty value` lines every five minutes, forever.
+  Those per-item lines, and the one for a Cursor workspace database
+  Cursor created and never filled in, now appear only under
+  `aii index --verbose`. Only those two expected cases went quiet: a
+  composer record aii cannot decode, and a workspace database that is
+  locked, unreadable, or holding content aii cannot decode, are still
+  reported on every run. The summary line now reads
+  `cursor: composers seen=… emitted=… skipped=… parse_errors=…`, its
+  `skipped` count includes the records it could not parse, and
+  `parse_errors` counts the ones that failed for a reason worth
+  looking at.
 - `aii search` no longer fails with `fts5: syntax error near "*"` when
   the query contains an uppercase `AND`, `OR`, or `NOT`. These words
   now work as boolean operators between terms, so

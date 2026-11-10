@@ -36,6 +36,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ericmason/aii/internal/logx"
 	"github.com/ericmason/aii/internal/source"
 	"github.com/ericmason/aii/internal/store"
 
@@ -118,7 +119,7 @@ func (s *Source) Scan(ctx context.Context, db *store.DB, full bool, out chan<- s
 	}
 	defer rows.Close()
 
-	var composersSeen, composersEmitted, composersSkipped int
+	var composersSeen, composersEmitted, composersSkipped, composersParseErrors int
 	for rows.Next() {
 		select {
 		case <-ctx.Done():
@@ -141,7 +142,22 @@ func (s *Source) Scan(ctx context.Context, db *store.DB, full bool, out chan<- s
 
 		cd, err := parseComposerData(val)
 		if err != nil {
-			log.Printf("cursor: composer %s: parse composerData: %v", composerID, err)
+			if errors.Is(err, errEmptyValue) {
+				// Cursor leaves thousands of empty composerData rows
+				// behind, and every scan sees them again. They are an
+				// expected outcome, not a fault, so they count toward
+				// the summary line below and stay out of the default
+				// log.
+				logx.Verbosef("cursor: composer %s: parse composerData: %v", composerID, err)
+			} else {
+				// A row with content aii can't decode is a real
+				// problem: report it every run, and count it in the
+				// summary so the total is visible even if the lines
+				// scroll past.
+				log.Printf("cursor: composer %s: parse composerData: %v", composerID, err)
+				composersParseErrors++
+			}
+			composersSkipped++
 			continue
 		}
 		if len(cd.Headers) == 0 {
@@ -161,7 +177,8 @@ func (s *Source) Scan(ctx context.Context, db *store.DB, full bool, out chan<- s
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate composerData: %w", err)
 	}
-	log.Printf("cursor: composers seen=%d emitted=%d skipped=%d", composersSeen, composersEmitted, composersSkipped)
+	log.Printf("cursor: composers seen=%d emitted=%d skipped=%d parse_errors=%d",
+		composersSeen, composersEmitted, composersSkipped, composersParseErrors)
 	return nil
 }
 
@@ -191,7 +208,18 @@ func (s *Source) buildWorkspaceMap(ctx context.Context, root string) (map[string
 		wsPath := readWorkspaceJSON(filepath.Join(hashDir, "workspace.json"))
 		ids, err := readComposerIDsFromWorkspaceDB(ctx, dbPath)
 		if err != nil {
-			log.Printf("cursor: workspace DB %s: %v", dbPath, err)
+			if errors.Is(err, errNoItemTable) {
+				// Expected: Cursor created the file and never filled it
+				// in, and a scan meets the same ones every run. The
+				// count of workspaces actually opened is logged by the
+				// caller.
+				logx.Verbosef("cursor: workspace DB %s: %v", dbPath, err)
+			} else {
+				// A workspace database that is locked, unreadable, or
+				// holding content aii can't decode costs real
+				// composer->workspace mappings. Report it every run.
+				log.Printf("cursor: workspace DB %s: %v", dbPath, err)
+			}
 			continue
 		}
 		opened++
@@ -250,6 +278,13 @@ func fileURIToPath(uri string) string {
 	return uri
 }
 
+// errNoItemTable marks a workspace database that has no ItemTable at
+// all. Cursor creates the file before it writes anything into it, so a
+// scan meets the same empty ones every run; every other failure to read
+// a workspace database is a real problem. Callers match it with
+// errors.Is.
+var errNoItemTable = errors.New("no ItemTable")
+
 // readComposerIDsFromWorkspaceDB opens a workspace state.vscdb read-only and
 // returns the list of composer IDs referenced by its composer.composerData row.
 func readComposerIDsFromWorkspaceDB(ctx context.Context, path string) ([]string, error) {
@@ -258,6 +293,19 @@ func readComposerIDsFromWorkspaceDB(ctx context.Context, path string) ([]string,
 		return nil, fmt.Errorf("open: %w", err)
 	}
 	defer db.Close()
+
+	// Ask the catalog rather than reading the query's error text: a
+	// missing ItemTable is expected and quiet, while a locked or
+	// corrupt database must still be reported.
+	var present int
+	switch err := db.QueryRowContext(ctx,
+		`SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name = 'ItemTable'`,
+	).Scan(&present); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, errNoItemTable
+	case err != nil:
+		return nil, fmt.Errorf("look up ItemTable: %w", err)
+	}
 
 	var val []byte
 	err = db.QueryRowContext(ctx, `SELECT value FROM ItemTable WHERE key = 'composer.composerData'`).Scan(&val)
@@ -419,11 +467,19 @@ func stripUserQueryTags(s string) string {
 	return s
 }
 
+// errEmptyValue marks the one parseComposerData failure that is an
+// expected part of a Cursor store rather than a fault: a composerData
+// row Cursor created and never wrote to. Callers match it with
+// errors.Is to decide whether a failure is worth reporting.
+var errEmptyValue = errors.New("empty value")
+
 // parseComposerData decodes the JSON blob stored under composerData:<id>.
+// An empty row returns errEmptyValue; anything else that fails to
+// decode returns the decoder's own error.
 func parseComposerData(raw []byte) (composerDataDoc, error) {
 	var cd composerDataDoc
 	if len(raw) == 0 {
-		return cd, errors.New("empty value")
+		return cd, errEmptyValue
 	}
 	if err := json.Unmarshal(raw, &cd); err != nil {
 		return cd, err
