@@ -8,6 +8,32 @@ called out under **Changed** when they happen.
 
 ## [Unreleased]
 
+### Added
+- `aii compact` merges both full-text indexes and rewrites the
+  database without the pages that merge frees. On a 12.7 GiB database
+  left by two full reindexes it returned 3.8 GiB in about fifteen
+  minutes. Run it once on a database that is already oversized. It
+  takes the index lock, so it will not stall a scheduled index run,
+  and it refuses to start while an indexer holds the lock. `VACUUM`
+  can need up to twice the size of the database in free disk space,
+  part of it in the temporary directory, which may be on another
+  volume; pass `--no-vacuum` to merge the indexes and leave the freed
+  pages inside the file for later writes to reuse. If another aii
+  process is reading the database, the write-ahead log cannot be
+  emptied: `aii compact` says so and exits non-zero, and `aii index`
+  logs it and still reports what it indexed.
+
+### Fixed
+- `aii index --full` no longer leaves the database holding a second
+  copy of every message. A full reindex deletes and reinserts the
+  whole corpus, and FTS5 answers a delete by appending a marker rather
+  than erasing terms, so the replaced text stayed on disk and the
+  indexes kept growing — a corpus that grew 5% over two full runs
+  pushed the trigram index from 5.2 GB to 9.1 GB. A full run now
+  merges both indexes before it finishes, which takes a few minutes on
+  a large database and runs while the index lock is held. Incremental
+  runs are unchanged.
+
 ## [0.6.2] - 2026-11-10
 
 ### Fixed

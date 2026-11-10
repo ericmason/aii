@@ -67,6 +67,7 @@ Usage:
   aii ui      [--addr 127.0.0.1:8723]       # serve + open browser (alias: web)
   aii tui
   aii doctor
+  aii compact [--no-vacuum] [--quiet]       # merge the full-text indexes and shrink the file
   aii cron    install|uninstall|status|run  # schedule background indexing
   aii version                                # print version and exit
 
@@ -113,6 +114,8 @@ func main() {
 		err = cmdTUI(ctx, args)
 	case "doctor":
 		err = cmdDoctor()
+	case "compact":
+		err = cmdCompact(ctx, args)
 	case "related":
 		err = cmdRelated(args)
 	case "mcp":
@@ -211,9 +214,34 @@ func cmdIndex(ctx context.Context, args []string) error {
 			stats.Errors, stats.Deferred)
 	}
 
+	// A full run deletes and reinserts every message, and FTS5 keeps a
+	// deleted row's terms until a merge drops them, so without this the
+	// indexes would be left holding a second copy of the whole corpus.
+	// Merging here is safe: this process holds the index lock. It is
+	// also minutes of work on a large database, which is why it does
+	// not run on the incremental runs the scheduler makes every five
+	// minutes. A merge that fails is reported and does not fail the
+	// run, which indexed everything it was asked to.
+	if *full {
+		took, err := db.OptimizeFTS(ctx)
+		if err != nil {
+			log.Printf("merge full-text indexes: %v", err)
+		} else if !*quiet {
+			var total time.Duration
+			for _, d := range took {
+				total += d
+			}
+			fmt.Printf("merged the full-text indexes in %s; run `aii compact` to return the freed space to the filesystem\n",
+				total.Truncate(time.Millisecond))
+		}
+	}
+
+	// A reader can keep the log from being emptied. That costs disk
+	// space, not data, and the next run empties it, so an index run
+	// says so and still reports what it indexed.
 	if *verbose {
 		t := time.Now()
-		if _, err := db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		if err := db.CheckpointTruncate(ctx); err != nil {
 			log.Printf("checkpoint: %v", err)
 		} else {
 			log.Printf("checkpoint: %s", time.Since(t).Truncate(time.Millisecond))
@@ -224,8 +252,8 @@ func cmdIndex(ctx context.Context, args []string) error {
 		} else {
 			log.Printf("analyze: %s", time.Since(t).Truncate(time.Millisecond))
 		}
-	} else {
-		db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+	} else if err := db.CheckpointTruncate(ctx); err != nil {
+		log.Printf("checkpoint: %v", err)
 	}
 	// Checkpoint first, then report: a run with deferred batches exits
 	// non-zero, and leaving the WAL unchecked would compound it.
@@ -1372,6 +1400,7 @@ func cmdHelpJSON() error {
 		Env:             []string{"AII_DB", "AII_AGENT", "AII_ASK_CMD", "AII_AIDER_ROOTS", "NO_COLOR", "FORCE_COLOR"},
 		Commands: []cmdInfo{
 			{"index", "Scan agent directories and update the FTS index", "aii index [--source all|cc|codex|cursor|pi|opencode|gemini|copilot|aider|cline|roo] [--full] [--verbose] [--no-redact] [--redact-sources]", []flagInfo{
+				{"--full", "", "wipe index state and reindex every transcript, then merge the full-text indexes so they do not keep the text the reindex replaced; run `aii compact` afterwards to return that space to the filesystem"},
 				{"--no-redact", "", "disable the default pass that scrubs API keys, tokens, and PEM blocks from indexed content"},
 				{"--redact-sources", "", "also rewrite the original JSONL transcripts in place with redacted content (destructive; JSONL sources only)"},
 			}},
@@ -1410,6 +1439,10 @@ func cmdHelpJSON() error {
 				{"--format", "", "pretty|json|ndjson — alternative spelling of --pretty/--json/--ndjson"},
 			}},
 			{"doctor", "Print DB path, source paths, and per-agent counts", "aii doctor", nil},
+			{"compact", "Merge the full-text indexes and rewrite the database without the pages that merge frees. Takes the index lock and can run for minutes on a large database; VACUUM can also need up to twice the size of the database in free disk space, part of it in the temporary directory, which may be on another volume.", "aii compact [--no-vacuum] [--quiet]", []flagInfo{
+				{"--no-vacuum", "", "merge the full-text indexes but skip the rewrite, leaving the freed pages inside the file for later writes to reuse"},
+				{"--quiet", "", "suppress the per-step lines"},
+			}},
 			{"serve", "HTTP UI bound to localhost", "aii serve [--addr 127.0.0.1:8723]", nil},
 			{"ui", "Serve + open browser (alias: web)", "aii ui [--addr 127.0.0.1:8723]", nil},
 			{"tui", "Two-pane bubbletea search UI", "aii tui", nil},
