@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ericmason/aii/internal/logx"
@@ -65,6 +66,11 @@ func Run(ctx context.Context, db *store.DB, sources []source.Source, opt Options
 	ch := make(chan source.Batch, 32)
 	var wg sync.WaitGroup
 
+	// Scans run concurrently with the writer loop below, which also
+	// counts errors, so their count goes through an atomic and is folded
+	// into stats once every scan has finished.
+	var scanErrors atomic.Int64
+
 	for _, s := range sources {
 		wg.Add(1)
 		go func(s source.Source) {
@@ -74,7 +80,7 @@ func Run(ctx context.Context, db *store.DB, sources []source.Source, opt Options
 			}
 			if err := s.Scan(ctx, db, opt.Full, ch); err != nil {
 				log.Printf("[%s] scan error: %v", s.Name(), err)
-				stats.Errors++
+				scanErrors.Add(1)
 			}
 			if opt.Verbose {
 				log.Printf("[%s] scan complete", s.Name())
@@ -102,12 +108,16 @@ func Run(ctx context.Context, db *store.DB, sources []source.Source, opt Options
 		}
 		// Nothing of this batch reached the database, and its stored
 		// state still points at what an earlier run wrote. Mark the
-		// file so the next run reparses it rather than seeing an
-		// unchanged mtime and skipping it.
-		log.Printf("apply batch for %s: %v — marking the file for reindex", b.State.SourcePath, err)
+		// key the source reads back, so the next run reparses the file
+		// rather than seeing an unchanged mtime and skipping it.
+		key := b.MarkKey()
+		log.Printf("apply batch for %s: %v — marking %s for reindex", b.State.SourcePath, err, key)
 		stats.Deferred++
-		deferred = append(deferred, b.State.SourcePath)
+		deferred = append(deferred, key)
 	}
+
+	// Every scan goroutine has returned by now: ch closes after they do.
+	stats.Errors += int(scanErrors.Load())
 
 	markErr := markForReindex(db, deferred)
 	stats.Duration = time.Since(start)

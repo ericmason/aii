@@ -148,19 +148,29 @@ func ensureSearchIndex(db *sql.DB) error {
 	if err != nil || exists {
 		return err
 	}
-	// Open caps the pool at one connection, so these pragmas apply to the
-	// connection that runs the CREATE INDEX.
+	_, err = rebuildWithoutWaiting(db, searchIndexSQL)
+	return err
+}
+
+// rebuildWithoutWaiting runs one long write with the wait for the lock
+// disabled, and reports whether it ran. A rebuild that would have to
+// wait is skipped instead: waiting here fails the open, and a later
+// index run will do it.
+//
+// Open caps the pool at one connection, so the pragmas apply to the
+// connection that runs the statement.
+func rebuildWithoutWaiting(db *sql.DB, stmt string) (ran bool, err error) {
 	if _, err := db.Exec(`PRAGMA busy_timeout = 0`); err != nil {
-		return err
+		return false, err
 	}
-	_, err = db.Exec(searchIndexSQL)
+	_, err = db.Exec(stmt)
 	if _, rerr := db.Exec(fmt.Sprintf(`PRAGMA busy_timeout = %d`, BusyTimeout.Milliseconds())); rerr != nil && err == nil {
 		err = rerr
 	}
 	if isBusy(err) {
-		return nil
+		return false, nil
 	}
-	return err
+	return err == nil, err
 }
 
 // indexExists reports whether the named index is in the schema.
@@ -237,7 +247,7 @@ func migrateTrigram(db *sql.DB, rebuild bool) error {
 		return err
 	}
 	if stale {
-		if _, err := db.Exec(`INSERT INTO messages_fts_tri(messages_fts_tri) VALUES('rebuild')`); err != nil {
+		if _, err := rebuildWithoutWaiting(db, `INSERT INTO messages_fts_tri(messages_fts_tri) VALUES('rebuild')`); err != nil {
 			return fmt.Errorf("rebuild trigram index: %w", err)
 		}
 	}

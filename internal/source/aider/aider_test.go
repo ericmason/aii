@@ -458,3 +458,62 @@ func TestSessionUIDIsHex(t *testing.T) {
 		t.Errorf("uid %q is not 32 hex chars", uid)
 	}
 }
+
+// scan collects the batches one Scan emits, without writing them.
+func (h *harness) scan(full bool) []source.Batch {
+	h.t.Helper()
+	ch := make(chan source.Batch, 64)
+	done := make(chan []source.Batch, 1)
+	go func() {
+		var out []source.Batch
+		for b := range ch {
+			out = append(out, b)
+		}
+		done <- out
+	}()
+	err := h.src.Scan(context.Background(), h.db, full, ch)
+	close(ch)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return <-done
+}
+
+// Aider files one batch per session inside a history file, but decides
+// what to read from the file's own state. Every batch must therefore
+// name the file as the row to mark when it cannot be written: a mark on
+// a per-session key is read by nobody, and the session is lost for good.
+func TestEveryBatchMarksTheHistoryFile(t *testing.T) {
+	h := newHarness(t)
+	h.write(readFixture(t))
+
+	batches := h.scan(false)
+	if len(batches) < 2 {
+		t.Fatalf("got %d batches, want the sessions plus the file's own", len(batches))
+	}
+	perSession := 0
+	for _, b := range batches {
+		if got := b.MarkKey(); got != h.file {
+			t.Errorf("batch for %s marks %q for reindex, want the history file %q", b.State.SourcePath, got, h.file)
+		}
+		if b.State.SourcePath != h.file {
+			perSession++
+		}
+	}
+	if perSession == 0 {
+		t.Fatal("no batch carried a per-session key, so this test proves nothing")
+	}
+
+	// The key those batches name is one a later run reads back: marking
+	// it makes an otherwise unchanged file reparse.
+	h.index(false)
+	if st := h.index(false); st.MessagesAdded != 0 {
+		t.Fatalf("unchanged file added %d messages", st.MessagesAdded)
+	}
+	if err := h.db.MarkNeedsReindex(batches[0].MarkKey()); err != nil {
+		t.Fatalf("MarkNeedsReindex: %v", err)
+	}
+	if st := h.index(false); st.MessagesAdded == 0 {
+		t.Error("the marked key did not make the file reparse; a deferred batch would be lost")
+	}
+}

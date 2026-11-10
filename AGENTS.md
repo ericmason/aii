@@ -291,6 +291,12 @@ binary, zero network" promise is the whole design.
   file; every source turns that into a from-the-start reparse through
   `source.FullForFile`. Never advance index state for a batch that did
   not commit.
+- **A batch marks the `index_state` row its source reads back.** The
+  indexer marks `Batch.MarkKey()`, which is `State.SourcePath` unless
+  the source set `ReindexKey`. A source whose batch carries a key it
+  never looks up again (Aider's per-chat key, the old path Gemini and
+  Copilot delete when a session migrates) must set `ReindexKey` to the
+  file it does look up, or a deferred batch is lost for good.
 - **Triggers must be rewired, not additive.** `CREATE TRIGGER IF NOT
   EXISTS` is a no-op when the trigger exists with a different body.
   The trigram migration drops and recreates all three message

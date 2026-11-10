@@ -38,6 +38,28 @@ type Batch struct {
 	// file rotated/shrank, or a Cursor composer's bubble list changed
 	// in a way that invalidates ordinals.
 	Truncate bool
+
+	// ReindexKey names the index_state row the Source reads back when
+	// it decides whether to scan this artifact again. The indexer marks
+	// that row when it cannot write the batch, so the next run reads
+	// the artifact from the start.
+	//
+	// Leave it empty when the Source looks up State.SourcePath itself,
+	// which is the common case. Set it when a batch carries a different
+	// key: Aider files one batch per session inside a history file but
+	// looks up the file, and Gemini and Copilot emit a batch for a
+	// session's previous path while looking up its current one. Marking
+	// a key nothing reads back loses the batch for good.
+	ReindexKey string
+}
+
+// MarkKey returns the index_state row to mark when this batch cannot be
+// written: the one its Source reads back.
+func (b Batch) MarkKey() string {
+	if b.ReindexKey != "" {
+		return b.ReindexKey
+	}
+	return b.State.SourcePath
 }
 
 type Source interface {

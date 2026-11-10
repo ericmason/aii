@@ -311,6 +311,9 @@ func scanFile(ctx context.Context, db *store.DB, full bool, out chan<- source.Ba
 			if err := send(ctx, out, source.Batch{
 				State:    store.IndexState{SourcePath: k},
 				Truncate: true,
+				// The state this file is read against is the file's own,
+				// not the per-session key this batch carries.
+				ReindexKey: path,
 			}); err != nil {
 				return err
 			}
@@ -360,11 +363,15 @@ func scanFile(ctx context.Context, db *store.DB, full bool, out chan<- source.Ba
 			// Replace the session wholesale: it's small, and the tail
 			// session's last message may have grown since the last run.
 			Truncate: true,
+			// scanFile decides what to read from the file's state, so a
+			// dropped session batch has to mark the file, not the
+			// per-session key it carries.
+			ReindexKey: path,
 		}
 		if len(msgs) == 0 {
 			// A header with nothing after it yet. Remember nothing but
 			// the offset, so the session is picked up once it has text.
-			b = source.Batch{State: b.State, Truncate: true}
+			b = source.Batch{State: b.State, Truncate: true, ReindexKey: path}
 		}
 		if err := send(ctx, out, b); err != nil {
 			return err

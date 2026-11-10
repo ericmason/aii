@@ -164,7 +164,10 @@ func scanFile(ctx context.Context, db *store.DB, root, path string, full bool, o
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case out <- source.Batch{State: store.IndexState{SourcePath: existing.SourcePath}, Truncate: true}:
+			// The delete belongs to the old path, but the file being
+			// read is this one: mark it, or the stale rows survive and
+			// win under ON CONFLICT DO NOTHING.
+			case out <- source.Batch{State: store.IndexState{SourcePath: existing.SourcePath}, Truncate: true, ReindexKey: abs}:
 			}
 		}
 	}

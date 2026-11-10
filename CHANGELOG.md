@@ -31,6 +31,17 @@ called out under **Changed** when they happen.
   gone, along with the file's index state.
 - `aii index` exits non-zero and names the files when it cannot write
   a batch, and its summary line reports how many batches were deferred.
+- A deferred batch now marks the file its parser reads back, so Aider
+  sessions and migrated Gemini CLI and GitHub Copilot sessions recover
+  on the next run. Aider files one batch per chat inside a history
+  file, and Gemini and Copilot file one for a session's previous path
+  when the session moves from `.json` to `.jsonl`; a mark on those keys
+  was read by nobody, so an Aider chat stayed missing and a migrated
+  session kept serving its old messages.
+- An `aii index` run no longer fails when the trigram index needs a
+  rebuild and another process holds the write lock. The rebuild is
+  skipped, as the search covering index already was, and a later run
+  does it.
 
 ## [0.6.0] - 2026-11-10
 

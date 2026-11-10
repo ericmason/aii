@@ -117,6 +117,40 @@ func TestOpen_LeavesTrigramRebuildToTheIndexRun(t *testing.T) {
 	}
 }
 
+// An index run whose rebuild would have to wait for the lock skips it
+// and opens anyway. Waiting would fail the whole run, and a later run
+// does the rebuild.
+func TestOpenForIndex_SkipsTrigramRebuildWhileDatabaseLocked(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "aii.db")
+	seedWithEmptyTrigramIndex(t, path, 20)
+
+	release := holdWriteLock(t, path)
+
+	start := time.Now()
+	db, err := OpenForIndex(path)
+	if err != nil {
+		t.Fatalf("OpenForIndex while the write lock is held: %v", err)
+	}
+	defer db.Close()
+	if elapsed := time.Since(start); elapsed > BusyTimeout/2 {
+		t.Errorf("OpenForIndex took %s; it waited for the write lock instead of skipping the rebuild", elapsed)
+	}
+	if got := trigramDocs(t, db); got != 0 {
+		t.Errorf("trigram index holds %d docs; the rebuild should have been skipped", got)
+	}
+
+	release()
+
+	later, err := OpenForIndex(path)
+	if err != nil {
+		t.Fatalf("OpenForIndex after unlock: %v", err)
+	}
+	defer later.Close()
+	if got := trigramDocs(t, later); got != 20 {
+		t.Errorf("trigram index holds %d docs after the lock cleared, want 20", got)
+	}
+}
+
 // The rebuild check reads both counts from one snapshot. Read in
 // separate statements, a writer committing between them makes a current
 // index look stale, and the rebuild that follows blocks every writer.
