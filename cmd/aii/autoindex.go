@@ -8,6 +8,7 @@ package main
 // report freshness.
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,8 +20,18 @@ import (
 	"github.com/ericmason/aii/internal/store"
 )
 
-// dataDir is the parent of the DB — also where the lock and stamp live.
-func dataDir() string { return filepath.Dir(store.DefaultPath()) }
+// dataDir is the parent of the DB — also where the lock, the stamp, and
+// the scheduler's log live. The path is absolute even when AII_DB is
+// relative, because a scheduled job runs from a different directory
+// than the install did: launchd starts from / and cron from $HOME.
+func dataDir() string {
+	dir := filepath.Dir(store.DefaultPath())
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return dir
+	}
+	return abs
+}
 
 func lockPath() string  { return filepath.Join(dataDir(), ".index.lock") }
 func stampPath() string { return filepath.Join(dataDir(), ".last-index") }
@@ -57,10 +68,18 @@ func markIndexed() {
 	f.Close()
 }
 
-// acquireIndexLock claims the per-DB index lock. Returns a release
-// function (idempotent) and ok=true on success. ok=false means another
-// indexer holds it; the returned PID is informational and is 0 when the
-// holder wrote no PID.
+// acquireIndexLock claims the per-DB index lock. It reports exactly one
+// of three outcomes:
+//
+//	ok=true, err=nil      we own the run; call release when done
+//	ok=false, err=nil     another indexer holds the lock, and otherPID
+//	                      names it when it recorded a PID
+//	ok=false, err!=nil    the lock could not be evaluated
+//
+// The third case must never be reported as the second. A filesystem
+// without working locks, or a lock file we cannot create, is a problem
+// to surface, not a reason to skip the run quietly: `aii index` returns
+// the error and exits non-zero so launchd, cron, and the user see it.
 //
 // Ownership is an exclusive advisory lock (flock on unix, LockFileEx on
 // Windows) held on the lock file for the life of the run. The kernel
@@ -72,20 +91,44 @@ func markIndexed() {
 // process lock the unlinked inode while another locks a freshly created
 // file at the same path, and both would run. Release truncates the file
 // instead, which leaves it present and empty.
-func acquireIndexLock() (release func(), ok bool, otherPID int) {
+func acquireIndexLock() (release func(), ok bool, otherPID int, err error) {
+	noop := func() {}
 	if err := os.MkdirAll(dataDir(), 0o755); err != nil {
-		return func() {}, false, 0
+		return noop, false, 0, fmt.Errorf("create data dir %s: %w", dataDir(), err)
 	}
 	f, err := os.OpenFile(lockPath(), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return func() {}, false, 0
+		return noop, false, 0, fmt.Errorf("open lock file %s: %w", lockPath(), err)
 	}
-	locked, err := tryLockFile(f)
-	if err != nil || !locked {
+	locked, err := lockWithRetry(f)
+	if err != nil {
+		f.Close()
+		return noop, false, 0, fmt.Errorf("lock %s: %w", lockPath(), err)
+	}
+	if !locked {
 		// Read the holder's PID for the message, not for a decision.
 		pid := readLockPID()
 		f.Close()
-		return func() {}, false, pid
+		return noop, false, pid, nil
+	}
+
+	// Transitional, for one release: aii 0.6.0 and earlier claimed the
+	// lock by writing a PID and took no advisory lock, so our lock says
+	// nothing about an indexer started by an older binary. While the
+	// file names some other live process, assume that is what it is and
+	// let it finish. Drop this block once no pre-0.7.0 binary is in
+	// use; the PID becomes display-only again.
+	//
+	// "Live" here means the kernel still has a process table entry, so
+	// an indexer that exited but has not been reaped by its parent — a
+	// zombie — reads as running and holds off a new run until the
+	// parent reaps it. That costs at most a skipped interval, cron and
+	// launchd reap their children, and the whole block goes away next
+	// release, so it is not worth a platform-specific zombie check.
+	if pid := readLockPID(); pid > 0 && pid != os.Getpid() && processAlive(pid) {
+		_ = unlockFile(f)
+		f.Close()
+		return noop, false, pid, nil
 	}
 
 	// We own the run. Record our PID so `aii cron status` and anything
@@ -106,28 +149,69 @@ func acquireIndexLock() (release func(), ok bool, otherPID int) {
 		_ = f.Truncate(0)
 		_ = unlockFile(f)
 		f.Close()
-	}, true, 0
+	}, true, 0, nil
+}
+
+// A run that conflicts with the lock skips indexing, so it is worth a
+// short wait first: `aii cron status` holds a shared lock on the file
+// for a moment to read its state, and a scheduled run that started in
+// that moment would otherwise skip a whole interval. A real indexer
+// holds the lock for seconds to minutes, so waiting this long never
+// turns a genuine conflict into a false acquire.
+const (
+	lockRetryWindow = 150 * time.Millisecond
+	lockRetryPause  = 10 * time.Millisecond
+)
+
+// lockWithRetry takes the exclusive lock, retrying briefly while it
+// conflicts. An error is returned as is, without retrying: a
+// filesystem that cannot lock will not start being able to.
+func lockWithRetry(f *os.File) (bool, error) {
+	deadline := time.Now().Add(lockRetryWindow)
+	for {
+		locked, err := tryLockFile(f, true)
+		if err != nil || locked {
+			return locked, err
+		}
+		if time.Now().After(deadline) {
+			return false, nil
+		}
+		time.Sleep(lockRetryPause)
+	}
 }
 
 // indexLocked reports whether an indexer holds the lock right now,
-// along with the PID it recorded. Used by `aii cron status`. It answers
-// by trying to take the lock and releasing it again, so it never blocks
-// and never reports a crashed indexer as running.
-func indexLocked() (bool, int) {
-	f, err := os.OpenFile(lockPath(), os.O_RDWR, 0o600)
+// along with the PID it recorded. Used by `aii cron status`. A non-nil
+// error means the lock could not be evaluated, which is neither "held"
+// nor "free"; the caller says so rather than guessing.
+//
+// The probe takes a *shared* lock, so running `aii cron status` cannot
+// make a scheduled run skip: an exclusive holder still blocks the
+// probe, but the probe never blocks an indexer.
+func indexLocked() (locked bool, pid int, err error) {
+	f, err := os.Open(lockPath())
 	if err != nil {
-		return false, 0
+		if errors.Is(err, os.ErrNotExist) {
+			return false, 0, nil
+		}
+		return false, 0, fmt.Errorf("open lock file %s: %w", lockPath(), err)
 	}
 	defer f.Close()
-	locked, err := tryLockFile(f)
+	free, err := tryLockFile(f, false)
 	if err != nil {
-		return false, 0
+		return false, 0, fmt.Errorf("lock %s: %w", lockPath(), err)
 	}
-	if locked {
-		_ = unlockFile(f)
-		return false, 0
+	if !free {
+		return true, readLockPID(), nil
 	}
-	return true, readLockPID()
+	_ = unlockFile(f)
+	// Transitional, matching acquireIndexLock: an indexer started by a
+	// pre-0.7.0 binary holds no advisory lock, so the PID is all there
+	// is to go on. Drop this with that block.
+	if p := readLockPID(); p > 0 && p != os.Getpid() && processAlive(p) {
+		return true, p, nil
+	}
+	return false, 0, nil
 }
 
 // readLockPID returns the PID the current lock holder recorded, or 0

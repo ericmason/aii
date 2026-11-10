@@ -262,11 +262,7 @@ func cronStatus() error {
 	} else {
 		fmt.Printf("Log:   %s (none yet)\n", cronLogPath())
 	}
-	if locked, pid := indexLocked(); locked {
-		fmt.Printf("Lock:  held by pid %d (indexer running now)\n", pid)
-	} else {
-		fmt.Println("Lock:  free")
-	}
+	fmt.Println(lockStatusLine())
 	switch runtime.GOOS {
 	case "darwin":
 		return statusLaunchd()
@@ -275,6 +271,21 @@ func cronStatus() error {
 	default:
 		return statusCrontab()
 	}
+}
+
+// lockStatusLine is the `aii cron status` line for the index lock. A
+// lock state that cannot be read is its own answer — neither held nor
+// free — so a filesystem that cannot lock reads as a problem to fix
+// rather than an idle indexer.
+func lockStatusLine() string {
+	locked, pid, err := indexLocked()
+	switch {
+	case err != nil:
+		return fmt.Sprintf("Lock:  unknown (%v)", err)
+	case locked:
+		return fmt.Sprintf("Lock:  held by pid %d (indexer running now)", pid)
+	}
+	return "Lock:  free"
 }
 
 // cronInstallStatus reports whether a scheduler entry is registered
@@ -373,7 +384,22 @@ func statusLaunchd() error {
 // about a scheduled run is derived from the DB path: which database it
 // indexes, and which cron.log it writes and trims. The installer reads
 // that path from AII_DB, so the job has to see the same value.
-func dbEnvOverride() string { return os.Getenv("AII_DB") }
+//
+// The value is made absolute. A scheduled job runs from a different
+// directory than the install did — launchd starts from / and cron from
+// $HOME — so a relative AII_DB passed through as typed would point the
+// job at a different database, or at none.
+func dbEnvOverride() string {
+	db := os.Getenv("AII_DB")
+	if db == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(db)
+	if err != nil {
+		return db
+	}
+	return abs
+}
 
 // xmlString escapes s for use inside a plist <string> element.
 func xmlString(s string) string {
@@ -425,17 +451,42 @@ func buildLaunchdPlist(exe string, intervalSeconds int) string {
 
 // --- schtasks (Windows) ------------------------------------------------
 
+// schtasksTRMaxChars is the documented limit on the /TR command string:
+// "The path name must not exceed 262 characters."
+// https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/schtasks-create
+const schtasksTRMaxChars = 262
+
 // schtasksAction builds the command string for schtasks /TR. /TR takes
 // a single command, so the exe is quoted for paths with spaces (e.g.
 // "C:\Program Files\aii\aii.exe"). With a db path, the command runs
 // through `cmd /c` so the task can set AII_DB first; `set "NAME=value"`
 // keeps the value's spaces and trailing characters out of the variable
 // name and is safe for paths that contain `&` or `(`.
-func schtasksAction(exe, db string) string {
+//
+// Two things make a command unusable rather than merely ugly, so both
+// are errors instead of a schedule that silently misbehaves:
+//
+//   - A `%` in the DB path. cmd expands `%NAME%` inside double quotes
+//     too, and there is no escape for `%` on a cmd command line, only
+//     in a batch file. Such a path would reach the indexer mangled.
+//   - A command past the documented /TR length. schtasks truncates or
+//     rejects it, and a truncated command is a task that cannot run.
+func schtasksAction(exe, db string) (string, error) {
 	if db == "" {
-		return fmt.Sprintf(`"%s" index --quiet`, exe)
+		return withinTRLimit(fmt.Sprintf(`"%s" index --quiet`, exe))
 	}
-	return fmt.Sprintf(`cmd /c set "AII_DB=%s" && "%s" index --quiet`, db, exe)
+	if strings.Contains(db, "%") {
+		return "", fmt.Errorf("AII_DB path %q contains %%, which cmd would expand as a variable; move the database to a path without %%", db)
+	}
+	return withinTRLimit(fmt.Sprintf(`cmd /c set "AII_DB=%s" && "%s" index --quiet`, db, exe))
+}
+
+func withinTRLimit(action string) (string, error) {
+	if len(action) > schtasksTRMaxChars {
+		return "", fmt.Errorf("scheduled command is %d characters, over the %d schtasks allows for /TR: %s",
+			len(action), schtasksTRMaxChars, action)
+	}
+	return action, nil
 }
 
 // installSchtasks registers a Task Scheduler task that runs
@@ -452,7 +503,10 @@ func installSchtasks(exe string, intervalSeconds int) error {
 		fmt.Fprintf(os.Stderr, "warning: %dm exceeds schtasks /SC MINUTE cap; capping at %dm\n", mins, schtasksMaxMinute)
 		mins = schtasksMaxMinute
 	}
-	action := schtasksAction(exe, dbEnvOverride())
+	action, err := schtasksAction(exe, dbEnvOverride())
+	if err != nil {
+		return err
+	}
 	out, err := exec.Command("schtasks",
 		"/Create", "/F",
 		"/SC", "MINUTE",
@@ -610,20 +664,24 @@ func cronLine(exe string, intervalSeconds int) (string, error) {
 		fmt.Fprintln(os.Stderr, "warning: cron can't go sub-minute; rounding to */1 * * * *")
 		mins = 1
 	}
-	logPath := cronLogPath()
+	// Every path in the line goes through shellQuote: a space, an
+	// apostrophe, or a `%` in the binary's path or the log's path breaks
+	// the line the same way one in the DB path would.
+	logPath := shellQuote(cronLogPath())
+	quotedExe := shellQuote(exe)
 	env := cronEnvPrefix()
 	if mins == 1 {
-		return fmt.Sprintf("* * * * * %s%s index --quiet >> %s 2>&1", env, exe, logPath), nil
+		return fmt.Sprintf("* * * * * %s%s index --quiet >> %s 2>&1", env, quotedExe, logPath), nil
 	}
 	if 60%mins == 0 {
-		return fmt.Sprintf("*/%d * * * * %s%s index --quiet >> %s 2>&1", mins, env, exe, logPath), nil
+		return fmt.Sprintf("*/%d * * * * %s%s index --quiet >> %s 2>&1", mins, env, quotedExe, logPath), nil
 	}
 	// Non-divisor of 60 (e.g. 7m): use closest divisor that doesn't lie
 	// about cadence. Cron's */N skips the 60-min boundary, which is fine
 	// for "occasional indexing" — pick the nearest divisor.
 	chosen := nearestDivisor(60, mins)
 	fmt.Fprintf(os.Stderr, "warning: %dm doesn't divide 60 — using */%d for an even cadence\n", mins, chosen)
-	return fmt.Sprintf("*/%d * * * * %s%s index --quiet >> %s 2>&1", chosen, env, exe, logPath), nil
+	return fmt.Sprintf("*/%d * * * * %s%s index --quiet >> %s 2>&1", chosen, env, quotedExe, logPath), nil
 }
 
 func nearestDivisor(n, target int) int {
