@@ -67,7 +67,7 @@ Usage:
   aii ui      [--addr 127.0.0.1:8723]       # serve + open browser (alias: web)
   aii tui
   aii doctor
-  aii compact [--no-vacuum]                 # merge the full-text indexes and shrink the file
+  aii compact [--no-vacuum] [--quiet]       # merge the full-text indexes and shrink the file
   aii cron    install|uninstall|status|run  # schedule background indexing
   aii version                                # print version and exit
 
@@ -236,9 +236,12 @@ func cmdIndex(ctx context.Context, args []string) error {
 		}
 	}
 
+	// A reader can keep the log from being emptied. That costs disk
+	// space, not data, and the next run empties it, so an index run
+	// says so and still reports what it indexed.
 	if *verbose {
 		t := time.Now()
-		if _, err := db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		if err := db.CheckpointTruncate(ctx); err != nil {
 			log.Printf("checkpoint: %v", err)
 		} else {
 			log.Printf("checkpoint: %s", time.Since(t).Truncate(time.Millisecond))
@@ -249,8 +252,8 @@ func cmdIndex(ctx context.Context, args []string) error {
 		} else {
 			log.Printf("analyze: %s", time.Since(t).Truncate(time.Millisecond))
 		}
-	} else {
-		db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+	} else if err := db.CheckpointTruncate(ctx); err != nil {
+		log.Printf("checkpoint: %v", err)
 	}
 	// Checkpoint first, then report: a run with deferred batches exits
 	// non-zero, and leaving the WAL unchecked would compound it.
@@ -1436,7 +1439,7 @@ func cmdHelpJSON() error {
 				{"--format", "", "pretty|json|ndjson — alternative spelling of --pretty/--json/--ndjson"},
 			}},
 			{"doctor", "Print DB path, source paths, and per-agent counts", "aii doctor", nil},
-			{"compact", "Merge the full-text indexes and rewrite the database without the pages that merge frees. Takes the index lock and can run for minutes on a large database; VACUUM also needs free disk space about the size of the file.", "aii compact [--no-vacuum] [--quiet]", []flagInfo{
+			{"compact", "Merge the full-text indexes and rewrite the database without the pages that merge frees. Takes the index lock and can run for minutes on a large database; VACUUM can also need up to twice the size of the database in free disk space, part of it in the temporary directory, which may be on another volume.", "aii compact [--no-vacuum] [--quiet]", []flagInfo{
 				{"--no-vacuum", "", "merge the full-text indexes but skip the rewrite, leaving the freed pages inside the file for later writes to reuse"},
 				{"--quiet", "", "suppress the per-step lines"},
 			}},

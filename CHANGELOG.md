@@ -15,9 +15,13 @@ called out under **Changed** when they happen.
   minutes. Run it once on a database that is already oversized. It
   takes the index lock, so it will not stall a scheduled index run,
   and it refuses to start while an indexer holds the lock. `VACUUM`
-  needs free disk space about the size of the database; pass
-  `--no-vacuum` to merge the indexes and leave the freed pages inside
-  the file for later writes to reuse.
+  can need up to twice the size of the database in free disk space,
+  part of it in the temporary directory, which may be on another
+  volume; pass `--no-vacuum` to merge the indexes and leave the freed
+  pages inside the file for later writes to reuse. If another aii
+  process is reading the database, the write-ahead log cannot be
+  emptied: `aii compact` says so and exits non-zero, and `aii index`
+  logs it and still reports what it indexed.
 
 ### Fixed
 - `aii index --full` no longer leaves the database holding a second

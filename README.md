@@ -284,11 +284,21 @@ Both steps hold SQLite's write lock for minutes on a large database,
 so `aii compact` takes the index lock and refuses to run while an
 indexer holds it.
 
+Emptying the write-ahead log is what hands the space back, and that
+needs every reader out of the way. If another aii process is reading
+the database — `aii serve`, `aii tui`, a query — `aii compact` waits a
+few seconds, then says so and exits non-zero. The database is intact
+and the merge is kept; only the space is still spoken for, and the
+next index run or `aii compact` releases it. `aii index` reports the
+same condition and still indexes.
+
 Both also need temporary disk space. The merge goes through the
 write-ahead log, which grows to about the size of the indexes it
-rewrites, and `VACUUM` writes a second copy of the database before
-replacing the original. Keep free space about the size of the
-database; `VACUUM` rolls back and leaves the original intact if it
+rewrites. `VACUUM` writes a second copy of the database and a
+temporary file alongside it, so it can need [up to twice the size of
+the database](https://www.sqlite.org/lang_vacuum.html), part of it in
+the temporary directory, which may be on another volume. Keep that
+much free; `VACUUM` rolls back and leaves the original intact if it
 runs out. Pass `--no-vacuum` to merge the indexes and leave the freed
 pages inside the file for later writes to reuse.
 

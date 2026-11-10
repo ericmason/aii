@@ -122,6 +122,22 @@ func TestOptimizeFTS_DropsTextLeftByAReindex(t *testing.T) {
 			totalAfter, totalBefore)
 	}
 
+	// Each index separately, because a bound on the two added together
+	// passes over code that merges one and skips the other: the one it
+	// merges frees more than enough bytes to cover the one it does not.
+	// Merging an index that is already merged changes nothing, so each
+	// one is merged again on its own here.
+	for _, table := range FTSTables {
+		size := ftsBytes(t, db, table)
+		q := fmt.Sprintf(`INSERT INTO %s(%s) VALUES('optimize')`, table, table)
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("optimize %s: %v", table, err)
+		}
+		if again := ftsBytes(t, db, table); again != size {
+			t.Errorf("merging %s changed it from %d to %d bytes; OptimizeFTS left it unmerged", table, size, again)
+		}
+	}
+
 	// The merge must drop only what was deleted. The last generation's
 	// text is still indexed, and the earlier ones are gone from the
 	// index as well as from messages.

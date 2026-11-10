@@ -57,9 +57,12 @@ func cmdCompact(ctx context.Context, args []string) error {
 			fmt.Printf("compacted: %s → %s on disk (%s reclaimed)\n",
 				humanBytes(before), humanBytes(after), humanBytes(before-after))
 		default:
-			// A database with little to merge can come out slightly
-			// larger, because the merge writes its new segment before
-			// the vacuum drops the old ones.
+			// A database with nothing to reclaim comes out the size it
+			// went in, and one that did not exist yet comes out larger
+			// than the nothing it started as. A database that shrank
+			// but reports growth would mean a checkpoint left a copy
+			// of it in the log, and the checkpoints return an error
+			// rather than do that.
 			fmt.Printf("compacted: %s → %s on disk\n", humanBytes(before), humanBytes(after))
 		}
 	}
@@ -83,17 +86,18 @@ func compactDB(ctx context.Context, db *store.DB, noVacuum, quiet bool) error {
 	// Checkpoint first: the merge's rewrites are still in the
 	// write-ahead log, and VACUUM would otherwise copy a database that
 	// does not yet include them back into the log a second time.
-	if _, err := db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
-		return fmt.Errorf("checkpoint: %w", err)
+	if err := db.CheckpointTruncate(ctx); err != nil {
+		return fmt.Errorf("checkpoint before vacuum: %w", err)
 	}
 	if noVacuum {
 		return nil
 	}
 
-	// VACUUM writes a full second copy of the database before it
-	// replaces the original, so it needs free space about the size of
-	// the file. It rolls back if it runs out, leaving the original
-	// intact.
+	// VACUUM writes a full second copy of the database and a temporary
+	// file alongside it, so it can need up to twice the size of the
+	// database in free space, part of it in the temporary directory,
+	// which may be on another volume. It rolls back if it runs out,
+	// leaving the original intact.
 	start := time.Now()
 	if err := db.Vacuum(ctx); err != nil {
 		return fmt.Errorf("vacuum: %w", err)
@@ -103,7 +107,7 @@ func compactDB(ctx context.Context, db *store.DB, noVacuum, quiet bool) error {
 	// write-ahead log, so until the log is emptied the two files
 	// together are larger than the database was before the vacuum, and
 	// the space the vacuum reclaimed is still spoken for.
-	if _, err := db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+	if err := db.CheckpointTruncate(ctx); err != nil {
 		return fmt.Errorf("checkpoint after vacuum: %w", err)
 	}
 	if !quiet {

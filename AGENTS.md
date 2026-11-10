@@ -291,6 +291,13 @@ binary, zero network" promise is the whole design.
   long writes under the index lock, by the rule below. Don't add the
   merge to incremental runs: the scheduler fires every five minutes
   and the merge reads and rewrites the whole index.
+- **A checkpoint reports a blocked reader in its result row, not as an
+  error.** `PRAGMA wal_checkpoint(TRUNCATE)` returns `busy, log,
+  checkpointed`; a reader that holds the log gives `busy` 1 and a
+  non-zero `log`, and the pragma itself succeeds. Run it through
+  `Exec` and the log keeps a full copy of the database while the code
+  reads it as emptied. Call `store.CheckpointTruncate`, which reads
+  the row, retries, and returns `store.ErrCheckpointBusy`.
 - **Only an index run rebuilds.** `store.Open` applies the cheap
   migrations; the rebuilds that read every message belong to
   `store.OpenForIndex`, which runs under the index lock. A query

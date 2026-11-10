@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -49,6 +50,44 @@ func ftsTotalBytes(t *testing.T, path string) int64 {
 		total += n.Int64
 	}
 	return total
+}
+
+// requireEachIndexMerged checks every full-text index separately, by
+// merging it on its own and requiring that to change nothing. A check
+// on the two indexes added together passes over code that merges one
+// and skips the other, because the one it does merge frees more than
+// enough bytes to cover the one it does not.
+func requireEachIndexMerged(t *testing.T, path string) {
+	t.Helper()
+	db, err := store.OpenForIndex(path)
+	if err != nil {
+		t.Fatalf("OpenForIndex: %v", err)
+	}
+	defer db.Close()
+	for _, table := range store.FTSTables {
+		before := ftsBytesOf(t, db, table)
+		if before == 0 {
+			t.Fatalf("%s is empty, so this check would prove nothing", table)
+		}
+		q := fmt.Sprintf(`INSERT INTO %s(%s) VALUES('optimize')`, table, table)
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("optimize %s: %v", table, err)
+		}
+		if after := ftsBytesOf(t, db, table); after != before {
+			t.Errorf("merging %s changed it from %d to %d bytes; it was left unmerged", table, before, after)
+		}
+	}
+}
+
+// ftsBytesOf is how much one full-text index occupies in its storage
+// table, stale text and delete markers included.
+func ftsBytesOf(t *testing.T, db *store.DB, table string) int64 {
+	t.Helper()
+	var n sql.NullInt64
+	if err := db.QueryRow(fmt.Sprintf(`SELECT sum(length(block)) FROM %s_data`, table)).Scan(&n); err != nil {
+		t.Fatalf("size of %s: %v", table, err)
+	}
+	return n.Int64
 }
 
 // writeTranscript puts a Claude Code transcript under a temporary HOME,
@@ -156,24 +195,7 @@ func TestIndexFull_LeavesTheFullTextIndexesMerged(t *testing.T) {
 		t.Fatalf("second full index: %v", err)
 	}
 
-	before := ftsTotalBytes(t, dbPath)
-	if before == 0 {
-		t.Fatal("the full-text indexes are empty, so this test would prove nothing")
-	}
-	db, err := store.OpenForIndex(dbPath)
-	if err != nil {
-		t.Fatalf("OpenForIndex: %v", err)
-	}
-	if _, err := db.OptimizeFTS(t.Context()); err != nil {
-		db.Close()
-		t.Fatalf("OptimizeFTS: %v", err)
-	}
-	db.Close()
-
-	if after := ftsTotalBytes(t, dbPath); after != before {
-		t.Errorf("merging after `aii index --full` changed the indexes from %d to %d bytes; the run left them unmerged",
-			before, after)
-	}
+	requireEachIndexMerged(t, dbPath)
 }
 
 // TestIndexIncremental_DoesNotMerge keeps the merge off the five-minute
@@ -258,6 +280,11 @@ func TestCompact_MergesAndShrinksTheFile(t *testing.T) {
 	if stale != 0 {
 		t.Errorf("messages_fts matches %d rows for a replaced generation after compact, want 0", stale)
 	}
+	db.Close()
+
+	// Last, because it writes: both indexes, not just their total,
+	// have to come out of the compact merged.
+	requireEachIndexMerged(t, dbPath)
 }
 
 // TestCompact_NoVacuumKeepsTheFreedPagesInTheFile covers --no-vacuum:
@@ -315,6 +342,54 @@ func TestCompactDB_EmptiesTheWriteAheadLog(t *testing.T) {
 	}
 	if after := dbFileBytes(dbPath); after >= before {
 		t.Errorf("database and log hold %d bytes after compactDB, want fewer than %d", after, before)
+	}
+}
+
+// TestCompactDB_ReportsAReaderBlockingTheCheckpoint covers the case
+// where another aii process is reading the database. A truncating
+// checkpoint cannot empty the log while a reader holds it, and SQLite
+// reports that by returning a row rather than by failing, so a compact
+// that only checked for an error would say it had shrunk a database
+// whose log still holds a full copy of it.
+func TestCompactDB_ReportsAReaderBlockingTheCheckpoint(t *testing.T) {
+	dir := withTempDataDir(t)
+	dbPath := filepath.Join(dir, "aii.db")
+	disableAutomerge(t, dbPath)
+	bloatIndex(t, dbPath, 5)
+
+	// A second connection, held inside a read transaction for the
+	// whole compact, is what another aii process reading the database
+	// looks like to SQLite.
+	reader, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open reader: %v", err)
+	}
+	defer reader.Close()
+	tx, err := reader.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("begin read transaction: %v", err)
+	}
+	defer tx.Rollback()
+	var n int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&n); err != nil {
+		t.Fatalf("read inside the transaction: %v", err)
+	}
+
+	db, err := store.OpenForIndex(dbPath)
+	if err != nil {
+		t.Fatalf("OpenForIndex: %v", err)
+	}
+	defer db.Close()
+
+	err = compactDB(t.Context(), db, false, true)
+	if err == nil {
+		t.Fatal("compactDB reported success while a reader held the write-ahead log")
+	}
+	if !errors.Is(err, store.ErrCheckpointBusy) {
+		t.Errorf("error = %v, want it to wrap store.ErrCheckpointBusy", err)
+	}
+	if !strings.Contains(err.Error(), "aii compact") {
+		t.Errorf("error = %v, want it to say how the space comes back", err)
 	}
 }
 

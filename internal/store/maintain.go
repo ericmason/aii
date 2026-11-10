@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -45,11 +46,64 @@ func (d *DB) OptimizeFTS(ctx context.Context) ([]time.Duration, error) {
 // Vacuum rewrites the database file without its free pages, returning
 // the space an optimize or a delete released to the operating system.
 //
-// VACUUM builds a second copy of the database before it replaces the
-// original, so it needs free disk space about the size of the file, and
-// it holds the write lock for the whole rewrite. Like OptimizeFTS, it
-// belongs to a process holding the index lock.
+// VACUUM builds a second copy of the database and a temporary file
+// alongside it, so it can need up to twice the size of the database in
+// free space. Part of that goes to the temporary directory, which may
+// be on a different volume than the database; see
+// https://www.sqlite.org/lang_vacuum.html. It holds the write lock for
+// the whole rewrite, so like OptimizeFTS it belongs to a process
+// holding the index lock.
 func (d *DB) Vacuum(ctx context.Context) error {
 	_, err := d.ExecContext(ctx, `VACUUM`)
 	return err
+}
+
+// ErrCheckpointBusy reports that a reader kept the write-ahead log from
+// being emptied. The database is intact and every write is committed;
+// only the space the log holds is still spoken for.
+var ErrCheckpointBusy = errors.New("another aii process is reading the database, so the write-ahead log could not be emptied; the space comes back at the next index run or `aii compact`")
+
+// checkpointAttempts and checkpointWait bound the retry. A reader that
+// holds the log for longer than this is doing real work, and waiting on
+// it would be worse than reporting it, because the caller holds the
+// index lock and SQLite's write lock throughout.
+const (
+	checkpointAttempts = 10
+	checkpointWait     = 500 * time.Millisecond
+)
+
+// CheckpointTruncate empties the write-ahead log and shrinks it to
+// nothing, so the space its frames hold goes back to the filesystem.
+//
+// A truncating checkpoint needs every reader out of the way. When one
+// is not, SQLite does not fail: the pragma returns a row whose first
+// column is 1 and leaves the log where it is. Running it through Exec
+// discards that row and reads as success, which is how a compact can
+// report that it shrank a database while the log still holds a full
+// copy of it. So this reads the row, retries while a reader holds the
+// log, and returns ErrCheckpointBusy when the reader outlasts the
+// retries.
+func (d *DB) CheckpointTruncate(ctx context.Context) error {
+	var lastBusy, lastLog, lastCheckpointed int64
+	for attempt := 0; attempt < checkpointAttempts; attempt++ {
+		if attempt > 0 {
+			t := time.NewTimer(checkpointWait)
+			select {
+			case <-ctx.Done():
+				t.Stop()
+				return ctx.Err()
+			case <-t.C:
+			}
+		}
+		row := d.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
+		if err := row.Scan(&lastBusy, &lastLog, &lastCheckpointed); err != nil {
+			return fmt.Errorf("checkpoint: %w", err)
+		}
+		// busy is 0 and the log is empty only when the checkpoint ran
+		// to the end of the log and truncated it.
+		if lastBusy == 0 && lastLog == 0 {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w (log holds %d frames, %d checkpointed)", ErrCheckpointBusy, lastLog, lastCheckpointed)
 }
