@@ -283,6 +283,41 @@ func TestCompact_NoVacuumKeepsTheFreedPagesInTheFile(t *testing.T) {
 	}
 }
 
+// TestCompactDB_EmptiesTheWriteAheadLog pins the state compactDB
+// leaves while the database is still open. In WAL mode the rewritten
+// database lands in the write-ahead log, so a compact that stops at
+// VACUUM holds the old size and the new one at once: the space it
+// reclaimed is still spoken for, and the size it reports is the sum of
+// both files. Closing the database hides this, because SQLite deletes
+// the log on the last connection out, so this test keeps it open.
+func TestCompactDB_EmptiesTheWriteAheadLog(t *testing.T) {
+	dir := withTempDataDir(t)
+	dbPath := filepath.Join(dir, "aii.db")
+	disableAutomerge(t, dbPath)
+	bloatIndex(t, dbPath, 5)
+
+	before := dbFileBytes(dbPath)
+	db, err := store.OpenForIndex(dbPath)
+	if err != nil {
+		t.Fatalf("OpenForIndex: %v", err)
+	}
+	defer db.Close()
+	if err := compactDB(t.Context(), db, false, true); err != nil {
+		t.Fatalf("compactDB: %v", err)
+	}
+
+	info, err := os.Stat(dbPath + "-wal")
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("stat write-ahead log: %v", err)
+	}
+	if err == nil && info.Size() != 0 {
+		t.Errorf("write-ahead log holds %d bytes after compactDB, want 0", info.Size())
+	}
+	if after := dbFileBytes(dbPath); after >= before {
+		t.Errorf("database and log hold %d bytes after compactDB, want fewer than %d", after, before)
+	}
+}
+
 func freelistPages(t *testing.T, path string) int64 {
 	t.Helper()
 	db, err := store.Open(path)

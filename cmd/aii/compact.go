@@ -98,6 +98,14 @@ func compactDB(ctx context.Context, db *store.DB, noVacuum, quiet bool) error {
 	if err := db.Vacuum(ctx); err != nil {
 		return fmt.Errorf("vacuum: %w", err)
 	}
+
+	// Checkpoint again. In WAL mode the rewritten database lands in the
+	// write-ahead log, so until the log is emptied the two files
+	// together are larger than the database was before the vacuum, and
+	// the space the vacuum reclaimed is still spoken for.
+	if _, err := db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		return fmt.Errorf("checkpoint after vacuum: %w", err)
+	}
 	if !quiet {
 		fmt.Printf("vacuumed in %s\n", time.Since(start).Truncate(time.Millisecond))
 	}

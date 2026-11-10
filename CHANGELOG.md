@@ -11,7 +11,7 @@ called out under **Changed** when they happen.
 ### Added
 - `aii compact` merges both full-text indexes and rewrites the
   database without the pages that merge frees. On a 12.7 GiB database
-  left by two full reindexes it returned 3.0 GiB in about ten
+  left by two full reindexes it returned 3.8 GiB in about fifteen
   minutes. Run it once on a database that is already oversized. It
   takes the index lock, so it will not stall a scheduled index run,
   and it refuses to start while an indexer holds the lock. `VACUUM`
