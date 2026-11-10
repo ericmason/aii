@@ -178,7 +178,8 @@ examples.
 
 ### The index lock
 
-One indexer runs at a time. `acquireIndexLock` in `cmd/aii/autoindex.go`
+One indexer runs at a time, and `aii compact` counts as one because it
+is the other command that writes. `acquireIndexLock` in `cmd/aii/autoindex.go`
 holds an exclusive advisory lock on `.index.lock` (`flock` on unix,
 `LockFileEx` on Windows — `cmd/aii/filelock_*.go`) for the whole run, so
 the kernel releases it when the process exits or is killed. Two rules
@@ -279,6 +280,17 @@ binary, zero network" promise is the whole design.
   empty indexes — see `trigramIndexStale`, and read both counts in one
   transaction: in separate statements a concurrent writer makes a
   current index look stale.
+- **A delete leaves its text in the FTS index.** FTS5 answers the
+  delete trigger by appending a marker; the old terms and the marker
+  both stay on disk until a merge discards them. Reindexing a
+  transcript deletes and reinserts its messages, so anything that
+  replaces a large share of the corpus has to merge afterwards or the
+  indexes keep a copy of what it replaced. `aii index --full` calls
+  `store.OptimizeFTS`; `aii compact` calls it and then `store.Vacuum`,
+  which is what returns the freed pages to the filesystem. Both are
+  long writes under the index lock, by the rule below. Don't add the
+  merge to incremental runs: the scheduler fires every five minutes
+  and the merge reads and rewrites the whole index.
 - **Only an index run rebuilds.** `store.Open` applies the cheap
   migrations; the rebuilds that read every message belong to
   `store.OpenForIndex`, which runs under the index lock. A query

@@ -128,7 +128,11 @@ per-session transactions.
 
 pi files are append-only and tail-follow by byte offset like the other JSONL sources. opencode, Gemini CLI, and Copilot Chat rewrite earlier messages in place, so aii re-reads a whole session when it changes (by row counts and update times for opencode, by file size and mtime for the others) and replaces what it had indexed for it.
 
-Incremental by default; `--full` wipes state and reindexes. `--verbose`
+Incremental by default; `--full` wipes state and reindexes. A full run
+then merges the full-text indexes, so they do not keep a copy of
+everything it replaced; run
+[`aii compact`](#aii-compact--shrink-the-database-file) afterwards to
+return the space that merge frees to the filesystem. `--verbose`
 logs each session as it's written, logs each item a source skips, and
 runs an `ANALYZE` at the end. Without it, a source logs only its
 summary line, so a scheduled run stays a few lines long however many
@@ -253,6 +257,40 @@ below.
 `stats` prints session/message counts per agent and the latest
 timestamp. `doctor` shows the DB path, source paths, and per-agent
 counts — run it first if something looks off.
+
+### `aii compact` — shrink the database file
+
+```
+aii compact [--no-vacuum] [--quiet]
+```
+
+Merges both full-text indexes and then rewrites the database without
+the pages that merge frees.
+
+FTS5 does not erase a deleted message's terms. The delete trigger
+appends a marker, and the terms and the marker both stay on disk until
+a merge discards them. Reindexing a transcript deletes and reinserts
+its messages, so an index that has been rebuilt a few times holds
+several copies of text no search can return. SQLite merges small runs
+of segments as they are written, but on a large index those automatic
+merges never reach the oldest segments.
+
+`aii index --full` merges the indexes itself, which stops the growth.
+`aii compact` is what gives the space back: run it once on a database
+that is already large, or after a full reindex when you want the file
+smaller rather than reused.
+
+Both steps hold SQLite's write lock for minutes on a large database,
+so `aii compact` takes the index lock and refuses to run while an
+indexer holds it.
+
+Both also need temporary disk space. The merge goes through the
+write-ahead log, which grows to about the size of the indexes it
+rewrites, and `VACUUM` writes a second copy of the database before
+replacing the original. Keep free space about the size of the
+database; `VACUUM` rolls back and leaves the original intact if it
+runs out. Pass `--no-vacuum` to merge the indexes and leave the freed
+pages inside the file for later writes to reuse.
 
 ### `aii usage` — token usage over time
 
@@ -497,6 +535,9 @@ of skipping it as unchanged.
   "params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":
   {"name":"smoke","version":"0"}}}' | aii mcp` — you should see a JSON
   response. Real errors go to stderr.
+- **The database is much larger than the transcripts it indexes.** The
+  full-text indexes are probably holding text that reindexing
+  replaced. Run `aii compact`.
 - **`aii doctor`** is the canonical "is everything wired up" check.
 
 ## Contributing
