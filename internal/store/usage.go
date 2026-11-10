@@ -28,6 +28,9 @@ type Usage struct {
 	// running totals into per-interval amounts, so a session's total is
 	// its last running total.
 	Cumulative bool
+	// Seq orders running totals that share a timestamp: the byte offset of
+	// the snapshot's line in its source file.
+	Seq int64
 }
 
 // Total returns the sum of all four token counts.
@@ -42,8 +45,8 @@ func (d *DB) InsertUsage(tx *sql.Tx, rows []Usage) error {
 	}
 	stmt, err := tx.Prepare(`
         INSERT INTO token_usage (agent, session_uid, request_key, ts, model,
-                                 input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cumulative)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cumulative, seq)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(agent, request_key) DO UPDATE SET
             ts                    = excluded.ts,
             model                 = COALESCE(NULLIF(excluded.model, ''), token_usage.model),
@@ -59,11 +62,13 @@ func (d *DB) InsertUsage(tx *sql.Tx, rows []Usage) error {
 	defer stmt.Close()
 	for _, u := range rows {
 		cum := 0
+		var seq any
 		if u.Cumulative {
 			cum = 1
+			seq = u.Seq
 		}
 		if _, err := stmt.Exec(u.Agent, u.SessionUID, u.Key, nullIfZero(u.TS), nullIfEmpty(u.Model),
-			u.Input, u.Output, u.CacheCreation, u.CacheRead, cum); err != nil {
+			u.Input, u.Output, u.CacheCreation, u.CacheRead, cum, seq); err != nil {
 			return err
 		}
 	}
@@ -118,17 +123,25 @@ type UsageRow struct {
 }
 
 // usageEventsSQL yields one row per request. Rows stored as running totals
-// become the difference from the session's previous running total, ordered
-// by the total itself, which only grows.
+// become the difference from the session's previous running total, in
+// time order (file order for equal times). A running total can restart,
+// for example when a session is resumed: when any count is lower than the
+// previous total's, the snapshot starts a new run and counts in full. A
+// running total repeated without a new request adds nothing and is dropped.
 const usageEventsSQL = `
     SELECT agent, session_uid, ts, model,
            input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens
     FROM token_usage WHERE cumulative = 0
     UNION ALL
     SELECT agent, session_uid, ts, model,
-           MAX(input_tokens - prev_input, 0), MAX(output_tokens - prev_output, 0),
-           MAX(cache_creation_tokens - prev_cc, 0), MAX(cache_read_tokens - prev_cr, 0)
+           CASE WHEN restart THEN input_tokens          ELSE input_tokens - prev_input       END,
+           CASE WHEN restart THEN output_tokens         ELSE output_tokens - prev_output     END,
+           CASE WHEN restart THEN cache_creation_tokens ELSE cache_creation_tokens - prev_cc END,
+           CASE WHEN restart THEN cache_read_tokens     ELSE cache_read_tokens - prev_cr     END
     FROM (
+      SELECT *, (input_tokens < prev_input OR output_tokens < prev_output
+                 OR cache_creation_tokens < prev_cc OR cache_read_tokens < prev_cr) AS restart
+      FROM (
         SELECT agent, session_uid, ts, model,
                input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
                COALESCE(LAG(input_tokens)          OVER w, 0) AS prev_input,
@@ -137,9 +150,11 @@ const usageEventsSQL = `
                COALESCE(LAG(cache_read_tokens)     OVER w, 0) AS prev_cr
         FROM token_usage
         WHERE cumulative = 1
-        WINDOW w AS (PARTITION BY agent, session_uid
-                     ORDER BY input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens, ts, id)
-    )`
+        WINDOW w AS (PARTITION BY agent, session_uid ORDER BY ts, seq, id)
+      )
+    )
+    WHERE restart OR input_tokens != prev_input OR output_tokens != prev_output
+          OR cache_creation_tokens != prev_cc OR cache_read_tokens != prev_cr`
 
 // UsageReport sums token usage by the filter's grouping keys. Days and
 // months are in the local time zone.
@@ -153,9 +168,11 @@ func (d *DB) UsageReport(f UsageFilter) ([]UsageRow, error) {
 	for _, k := range f.By {
 		switch k {
 		case "day":
-			cols = append(cols, "date(e.ts, 'unixepoch', 'localtime')")
+			// A request whose timestamp didn't parse has a NULL ts; it
+			// lands in an empty day rather than failing the scan.
+			cols = append(cols, "COALESCE(date(e.ts, 'unixepoch', 'localtime'), '')")
 		case "month":
-			cols = append(cols, "strftime('%Y-%m', e.ts, 'unixepoch', 'localtime')")
+			cols = append(cols, "COALESCE(strftime('%Y-%m', e.ts, 'unixepoch', 'localtime'), '')")
 		case "model":
 			cols = append(cols, "COALESCE(e.model, '')")
 		case "agent":

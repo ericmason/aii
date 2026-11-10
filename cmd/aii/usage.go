@@ -145,9 +145,9 @@ func writeUsagePretty(rows []usageRow, keys []string, total usageRow) error {
 		for _, k := range keys {
 			switch k {
 			case "day":
-				parts = append(parts, r.Day)
+				parts = append(parts, orDash(r.Day))
 			case "month":
-				parts = append(parts, r.Month)
+				parts = append(parts, orDash(r.Month))
 			case "model":
 				parts = append(parts, orDash(r.Model))
 			case "agent":

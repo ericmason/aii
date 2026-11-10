@@ -147,6 +147,32 @@ func TestUsageAppendedAcrossRuns(t *testing.T) {
 	}
 }
 
+// A response with no request id, copied into a resumed session's file
+// under a new session id, counts once.
+func TestUsageWithoutRequestIDCountsOnceAcrossResume(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(t.TempDir(), "aii.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	writeFile(t, filepath.Join(root, "proj", "old.jsonl"),
+		asstLine("old", "msg_1", "", "2026-01-02T10:00:00Z", 1, 10, 0, 0))
+	writeFile(t, filepath.Join(root, "proj", "new.jsonl"),
+		asstLine("new", "msg_1", "", "2026-01-02T10:00:00Z", 1, 10, 0, 0)+
+			asstLine("new", "msg_2", "", "2026-01-02T10:05:00Z", 2, 20, 0, 0))
+	runIndex(t, db, root, false)
+
+	rows, err := db.UsageReport(store.UsageFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Requests != 2 || rows[0].Total != 33 {
+		t.Fatalf("usage = %+v, want 2 requests and 33 tokens", rows)
+	}
+}
+
 func TestLineUsageAdvisorAndSynthetic(t *testing.T) {
 	line := []byte(`{"type":"assistant","sessionId":"s","requestId":"r","timestamp":"2026-01-02T10:00:00Z","message":{"id":"m","model":"main-model","usage":{"input_tokens":1,"output_tokens":2,"speed":"fast","iterations":[{"type":"message","input_tokens":1,"output_tokens":2},{"type":"advisor_message","model":"advisor-model","input_tokens":10,"output_tokens":3}]}}}`)
 	got := lineUsage(line, 0, "p")

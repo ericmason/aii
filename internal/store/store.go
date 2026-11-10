@@ -79,6 +79,7 @@ func Open(path string) (*DB, error) {
 	// Idempotent additive migrations. Older DBs won't have these columns.
 	for _, alter := range []string{
 		`ALTER TABLE sessions ADD COLUMN summary TEXT`,
+		`ALTER TABLE token_usage ADD COLUMN seq INTEGER`,
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
@@ -304,6 +305,23 @@ func (d *DB) DeleteBySourcePath(path string) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// DeleteSessionAtPath deletes one session (and, by cascade, its messages)
+// if it is stored for the given source file. Token usage is left alone.
+func (d *DB) DeleteSessionAtPath(agent, sessionUID, path string) error {
+	_, err := d.Exec(`DELETE FROM sessions WHERE agent = ? AND session_uid = ? AND source_path = ?`,
+		agent, sessionUID, path)
+	return err
+}
+
+// HasSessionAtPath reports whether a session is stored for the given
+// source file.
+func (d *DB) HasSessionAtPath(agent, sessionUID, path string) (bool, error) {
+	var n int
+	err := d.QueryRow(`SELECT COUNT(*) FROM sessions WHERE agent = ? AND session_uid = ? AND source_path = ?`,
+		agent, sessionUID, path).Scan(&n)
+	return n > 0, err
 }
 
 type Stats struct {

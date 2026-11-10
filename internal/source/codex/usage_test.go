@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ericmason/aii/internal/indexer"
@@ -139,5 +140,140 @@ func TestForkedRolloutKeepsItsOwnSessionID(t *testing.T) {
 	rows := report(t, db, "session")
 	if len(rows) != 1 || rows[0].SessionUID != "child" || rows[0].Total != 330 {
 		t.Fatalf("rows = %+v", rows)
+	}
+}
+
+// A running total that restarts inside one rollout (a resumed session)
+// counts in full from the restart, also when the restart arrives in a
+// later incremental read.
+func TestRolloutRunningTotalRestart(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(t.TempDir(), "aii.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	path := filepath.Join(dir, "rollout-r.jsonl")
+	first := metaLine("sess-r", "") + turnLine + userMsgLine +
+		tokenLine("2026-01-02T10:00:05Z", 1000, 0, 100) +
+		tokenLine("2026-01-02T11:00:00Z", 5000, 0, 500)
+	more := tokenLine("2026-01-03T09:00:00Z", 300, 0, 30) + // restart
+		tokenLine("2026-01-03T10:00:00Z", 800, 0, 80)
+	if err := os.WriteFile(path, []byte(first), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	index(t, db, path, false)
+	if err := os.WriteFile(path, []byte(first+more), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	index(t, db, path, false)
+
+	// Seq is the line's absolute byte offset, even in the second read.
+	data := first + more
+	var want []int64
+	for off := 0; off < len(data); {
+		end := off + strings.IndexByte(data[off:], '\n') + 1
+		if strings.Contains(data[off:end], `"token_count"`) {
+			want = append(want, int64(off))
+		}
+		off = end
+	}
+	rows, err := db.Query(`SELECT seq FROM token_usage ORDER BY seq`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []int64
+	for rows.Next() {
+		var s int64
+		if err := rows.Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, s)
+	}
+	rows.Close()
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("seq = %v, want %v", got, want)
+	}
+
+	check := func(label string) {
+		t.Helper()
+		days := report(t, db, "day")
+		if len(days) != 2 || days[0].Total != 5500 || days[1].Total != 880 {
+			t.Fatalf("%s: by day = %+v", label, days)
+		}
+	}
+	check("incremental")
+	index(t, db, path, true)
+	check("after full re-index")
+}
+
+// Older index runs stored a forked rollout under its parent's id. The
+// next read moves the fork's messages to its own session and drops the
+// stale row, whether the read is incremental, full, or a first read with
+// no saved offset.
+func TestForkedRolloutDropsStaleParentRow(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		full, saveState bool
+	}{{"incremental", false, true}, {"full", true, true}, {"no saved offset", false, false}} {
+		full := tc.full
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			db, err := store.Open(filepath.Join(t.TempDir(), "aii.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+
+			path := filepath.Join(dir, "rollout-child.jsonl")
+			data := metaLine("child", `,"forked_from_id":"parent"`) + metaLine("parent", "") + turnLine + userMsgLine
+			if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// What an older index run left behind.
+			id, err := db.UpsertSession(&store.Session{Agent: "codex", UID: "parent", SourcePath: path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tx, err := db.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.InsertMessages(tx, id, []store.Message{{Ordinal: 0, Role: "user", Content: "hello"}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			fi, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.saveState {
+				if err := db.SaveState(store.IndexState{SourcePath: path, MtimeNs: fi.ModTime().UnixNano(), Size: fi.Size(), LastOffset: fi.Size()}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			// The fork grows, then gets indexed.
+			more := `{"timestamp":"2026-01-02T10:00:09Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"world"}]}}` + "\n"
+			if err := os.WriteFile(path, []byte(data+more), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			index(t, db, path, full)
+
+			if s, _ := db.SessionByUID("codex", "parent"); s != nil {
+				t.Fatal("stale parent row still stored for the fork's file")
+			}
+			var n int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM messages m JOIN sessions s ON s.id = m.session_id
+                                   WHERE s.agent = 'codex' AND s.session_uid = 'child'`).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n != 2 {
+				t.Fatalf("child has %d messages, want 2", n)
+			}
+		})
 	}
 }

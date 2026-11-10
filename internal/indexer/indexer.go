@@ -94,6 +94,12 @@ func apply(db *store.DB, b source.Batch, verbose bool) error {
 		return db.SaveState(b.State)
 	}
 
+	if b.StaleSessionUID != "" && b.StaleSessionUID != b.Session.UID {
+		if err := db.DeleteSessionAtPath(b.Session.Agent, b.StaleSessionUID, b.State.SourcePath); err != nil {
+			return fmt.Errorf("delete stale session: %w", err)
+		}
+	}
+
 	id, err := db.UpsertSession(&b.Session)
 	if err != nil {
 		return fmt.Errorf("upsert session: %w", err)

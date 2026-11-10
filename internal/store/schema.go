@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS token_usage (
     cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
     cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
     cumulative            INTEGER NOT NULL DEFAULT 0,
+    seq                   INTEGER,
     UNIQUE(agent, request_key)
 );
 

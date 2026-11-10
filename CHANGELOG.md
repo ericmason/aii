@@ -35,7 +35,7 @@ called out under **Changed** when they happen.
 - `aii index --redact-sources` prints a note and skips pi, opencode, Gemini CLI, Copilot Chat, Aider, Cline, and Roo Code, because aii does not rewrite those agents' files.
 
 ### Fixed
-- A forked Codex session (one started with `forked_from_id`, such as a Codex subagent) is now indexed as its own session. Before, its messages were added to the parent session, because the rollout repeats the parent's `session_meta` record. Run `aii index --source codex --full` to split sessions indexed before this fix.
+- A forked Codex session (one started with `forked_from_id`, such as a Codex subagent) is now indexed as its own session. Before, its messages were added to the parent session, because the rollout repeats the parent's `session_meta` record. The next time aii reads a forked rollout that grew, it moves the fork's messages to the fork's own session; run `aii index --source codex --full` to split every session indexed before this fix.
 - `aii search` no longer fails with `fts5: syntax error near "*"` when
   the query contains an uppercase `AND`, `OR`, or `NOT`. These words
   now work as boolean operators between terms, so

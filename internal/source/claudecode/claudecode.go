@@ -435,8 +435,11 @@ type claudeUsage struct {
 //
 // Claude Code writes one line per content block of a response, each with
 // the same message id, request id, and usage, so the key is the message id
-// and request id together; the store keeps one row per key. A record with
-// no message id is keyed by its file and byte offset instead.
+// and request id together; the store keeps one row per key. Resumed
+// sessions copy earlier lines into a new file under a new session id, so
+// with no request id the key is the message id alone. A record with no
+// message id has nothing that survives a copy and is keyed by its file
+// and byte offset.
 func lineUsage(line []byte, lineStart int64, path string) []store.Usage {
 	var rec usageLine
 	if err := json.Unmarshal(line, &rec); err != nil || rec.Message.Usage == nil {
@@ -448,7 +451,7 @@ func lineUsage(line []byte, lineStart int64, path string) []store.Usage {
 	case rec.Message.ID != "" && rec.RequestID != "":
 		key = rec.Message.ID + "|" + rec.RequestID
 	case rec.Message.ID != "":
-		key = rec.Message.ID + "|session=" + rec.SessionID
+		key = rec.Message.ID
 	default:
 		key = fmt.Sprintf("%s@%d", path, lineStart)
 	}

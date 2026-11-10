@@ -264,8 +264,8 @@ Reports the input, output, cache write, and cache read tokens that the index rec
 
 aii records usage as it indexes and keeps it after the agent deletes the transcript, so history extends past Claude Code's 30-day transcript retention. To record usage for transcripts indexed before this feature existed, run `aii index --full` once.
 
-- **Claude Code**: each API response counts once, keyed by its message id and request id. Claude Code writes one transcript line per content block of a response, and a resumed session copies earlier responses into its new transcript; neither is counted twice. Subagent transcripts (`<session>/subagents/`) count toward the session that started them.
-- **Codex**: rollouts log a running total for the session (`token_count` events). A session's usage is its last running total, and each day gets the increase recorded that day. Codex counts cached input inside its input tokens; aii reports that part as cache read and the rest as input.
+- **Claude Code**: each API response counts once, keyed by its message id and request id (the message id alone when the line has no request id). Claude Code writes one transcript line per content block of a response, and a resumed session copies earlier responses into its new transcript; neither is counted twice. Subagent transcripts (`<session>/subagents/`) count toward the session that started them.
+- **Codex**: rollouts log a running total for the session (`token_count` events). Each day gets the increase recorded that day. When the running total starts over, for example after the session is resumed, aii counts the new total in full instead of losing it. Codex counts cached input inside its input tokens; aii reports that part as cache read and the rest as input.
 - Other agents don't record usage yet. Cursor stores token counts on only a small fraction of its messages, and the remaining agents are not wired up.
 
 ### `aii serve` / `aii ui` / `aii tui`

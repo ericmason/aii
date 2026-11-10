@@ -27,6 +27,12 @@ type Batch struct {
 	// shrinks or disappears stays in the index.
 	Usage []store.Usage
 
+	// StaleSessionUID, when set, names a session of the same agent that
+	// older index runs wrongly filed this file's messages under (a
+	// forked Codex rollout stored under its parent's id). The indexer
+	// deletes that session's row for State.SourcePath before upserting.
+	StaleSessionUID string
+
 	// Truncate, when true, tells the indexer to delete any existing
 	// rows for State.SourcePath before inserting. Used when a JSONL
 	// file rotated/shrank, or a Cursor composer's bubble list changed

@@ -215,6 +215,17 @@ func (s *Source) scanRolloutFile(ctx context.Context, db *store.DB, full bool, o
 		truncate = true
 		startOffset = 0
 	}
+	if startOffset > 0 {
+		// Older index runs filed a forked rollout under its parent's id.
+		// If that row is still here, read the whole file again so the
+		// fork's earlier messages move to the fork's own session.
+		if own, parent := rolloutMetaIDs(absPath); own != "" && parent != "" {
+			if stale, _ := db.HasSessionAtPath("codex", parent, absPath); stale {
+				truncate = true
+				startOffset = 0
+			}
+		}
+	}
 
 	f, err := os.Open(path)
 	if err != nil {
@@ -232,6 +243,7 @@ func (s *Source) scanRolloutFile(ctx context.Context, db *store.DB, full bool, o
 
 	var (
 		sessionUID    string
+		parentUID     string // set when this rollout is a fork
 		workspace     string
 		startedAt     int64
 		title         string
@@ -318,6 +330,9 @@ func (s *Source) scanRolloutFile(ctx context.Context, db *store.DB, full bool, o
 			// A forked session's rollout repeats its parent's
 			// session_meta after its own; the first one names this file.
 			if sessionUID != "" {
+				if parentUID == "" && meta.ID != sessionUID {
+					parentUID = meta.ID
+				}
 				continue
 			}
 			if meta.ID != "" {
@@ -375,7 +390,14 @@ func (s *Source) scanRolloutFile(ctx context.Context, db *store.DB, full bool, o
 				tc.Info == nil || tc.Info.TotalTokenUsage == nil {
 				continue
 			}
-			usage = append(usage, tokenSnapshot(tc.Info.TotalTokenUsage, ts, model))
+			if ts == 0 {
+				// Reports order running totals by time. A later total
+				// still counts these tokens.
+				continue
+			}
+			snap := tokenSnapshot(tc.Info.TotalTokenUsage, ts, model)
+			snap.Seq = lastLineStart - int64(len(lineBytes)) // absolute: lastLineStart starts at startOffset
+			usage = append(usage, snap)
 		default:
 			// Skip all other line types (event_msg, function_call, etc.
 			// that appear at the top level; we only care about
@@ -395,7 +417,7 @@ func (s *Source) scanRolloutFile(ctx context.Context, db *store.DB, full bool, o
 		// prefix: read it from the file's first line. Older index runs
 		// stored a forked rollout under its parent's id, so the sessions
 		// table can't be trusted for those files.
-		sessionUID = firstSessionMetaID(absPath)
+		sessionUID, parentUID = rolloutMetaIDs(absPath)
 	}
 	if sessionUID == "" {
 		// Fall back to the path-based lookup.
@@ -424,8 +446,9 @@ func (s *Source) scanRolloutFile(ctx context.Context, db *store.DB, full bool, o
 		return nil
 	}
 
-	// Key each running total by its values: the same snapshot read again
-	// (or a token_count repeated without a new request) maps to one row.
+	// Key each running total by its file and line byte offset, so reading
+	// the same line again maps to one row and reports can rebuild order.
+	// Rollouts are append-only, so offsets are stable across reads.
 	var priorModel string
 	for i := range usage {
 		u := &usage[i]
@@ -436,7 +459,7 @@ func (s *Source) scanRolloutFile(ctx context.Context, db *store.DB, full bool, o
 			u.Model = priorModel
 		}
 		u.SessionUID = sessionUID
-		u.Key = fmt.Sprintf("%s|%d|%d|%d|%d", sessionUID, u.Input, u.Output, u.CacheCreation, u.CacheRead)
+		u.Key = fmt.Sprintf("%s|%s@%d", sessionUID, filepath.Base(absPath), u.Seq)
 	}
 
 	endedAt := lastTS
@@ -467,11 +490,12 @@ func (s *Source) scanRolloutFile(ctx context.Context, db *store.DB, full bool, o
 	case <-ctx.Done():
 		return ctx.Err()
 	case out <- srcpkg.Batch{
-		Session:  session,
-		Messages: messages,
-		State:    state,
-		Usage:    usage,
-		Truncate: truncate,
+		Session:         session,
+		Messages:        messages,
+		State:           state,
+		Usage:           usage,
+		Truncate:        truncate,
+		StaleSessionUID: parentUID,
 	}:
 	}
 	return nil
@@ -549,27 +573,47 @@ func buildMessage(head responseItemHead, payload json.RawMessage, ts int64) (sto
 	return store.Message{}, false
 }
 
-// firstSessionMetaID returns the session id from a rollout's first line,
-// or "" if that line is not a session_meta record.
-func firstSessionMetaID(path string) string {
+// rolloutMetaIDs reads the session_meta records at the head of a rollout.
+// own is the id on the first line, or "" if that line is not a
+// session_meta record. parent is the id of a later session_meta with a
+// different id before the first response_item: a forked rollout repeats
+// its parent's session_meta after its own.
+func rolloutMetaIDs(path string) (own, parent string) {
 	f, err := os.Open(path)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	defer f.Close()
-	first, err := bufio.NewReaderSize(f, 1<<16).ReadBytes('\n')
-	if err != nil {
-		return ""
+	r := bufio.NewReaderSize(f, 1<<16)
+	for i := 0; i < 64; i++ {
+		b, err := r.ReadBytes('\n')
+		if err != nil {
+			return own, ""
+		}
+		var line rolloutLine
+		if json.Unmarshal(b, &line) != nil {
+			continue
+		}
+		if line.Type == "response_item" {
+			return own, ""
+		}
+		if line.Type != "session_meta" {
+			if i == 0 {
+				return "", ""
+			}
+			continue
+		}
+		var meta sessionMetaPayload
+		if json.Unmarshal(line.Payload, &meta) != nil {
+			continue
+		}
+		if i == 0 {
+			own = meta.ID
+		} else if meta.ID != "" && meta.ID != own {
+			return own, meta.ID
+		}
 	}
-	var line rolloutLine
-	if json.Unmarshal(first, &line) != nil || line.Type != "session_meta" {
-		return ""
-	}
-	var meta sessionMetaPayload
-	if json.Unmarshal(line.Payload, &meta) != nil {
-		return ""
-	}
-	return meta.ID
+	return own, ""
 }
 
 func sessionUIDFromPath(db *store.DB, path string) (string, error) {
