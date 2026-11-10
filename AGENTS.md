@@ -148,9 +148,38 @@ go build -o /tmp/aii ./cmd/aii          # binary
 go vet ./...                            # static check
 ```
 
-There's no test suite yet; validate with live smoke tests against
-`~/.local/share/aii/aii.db`. Install to `~/.local/bin/aii` after
-changes.
+```sh
+go test ./...                           # parser fixtures and CLI unit tests
+```
+
+Tests cover the source parsers and parts of the CLI. Back them with a
+live smoke test against a *copy* of `~/.local/share/aii/aii.db`
+(`AII_DB=/path/to/copy aii index`), never the real one. Install to
+`~/.local/bin/aii` after changes.
+
+### Logging from a source
+
+A source's scan walks thousands of items on every scheduled run, so a
+line per item fills the scheduler's log forever. Log expected per-item
+outcomes — a skipped record, a store the parser already counts in its
+summary — through `logx.Verbosef`, which prints only under
+`aii index --verbose`. Keep `log.Printf` for real errors and for the
+one summary line a source writes per scan, and count every item in
+that summary so a reader can tell nothing went missing.
+
+Quiet one named condition, never a whole error path. A helper that
+returns both "this record is empty" and "this database is locked" has
+to tell them apart for you: give the expected case a sentinel error,
+match it with `errors.Is`, and let everything else print. Reading the
+error's text is not telling them apart — check the catalog, the file,
+or whatever states the condition directly. `errEmptyValue` and
+`errNoItemTable` in `internal/source/cursor/cursor.go` are the
+examples.
+
+`aii index` trims `cron.log` to its last 1 MiB once it passes 8 MiB
+(`trimLogFile` in `cmd/aii/cron.go`). The trim rewrites the file in
+place, because launchd and the crontab `>>` redirect both hold it open
+in append mode while the indexer runs.
 
 ### Module layout
 
