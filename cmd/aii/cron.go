@@ -147,6 +147,10 @@ func trimLogFile(path string, maxBytes, keepBytes int64) (bool, error) {
 		time.Now().Format("2006-01-02 15:04:05"), size-int64(len(tail)))
 	out := append([]byte(header), tail...)
 
+	// Write before truncating, so a crash mid-trim leaves a longer file
+	// rather than a shorter one. A crash between the two calls can still
+	// leave one torn line where the new tail meets the old content; the
+	// next run trims again and the log is only a log.
 	if _, err := f.WriteAt(out, 0); err != nil {
 		return false, err
 	}
@@ -246,7 +250,11 @@ func cronStatus() error {
 	} else {
 		fmt.Println("Last:  (never — no stamp file)")
 	}
-	if info, err := os.Stat(cronLogPath()); err == nil {
+	if runtime.GOOS == "windows" {
+		// The Task Scheduler action has no redirect, so there is no log
+		// file to report; Task Scheduler keeps its own run history.
+		fmt.Println("Log:   none (Task Scheduler keeps the run history; see Event Viewer)")
+	} else if info, err := os.Stat(cronLogPath()); err == nil {
 		fmt.Printf("Log:   %s (%.1f MiB, trimmed to %d MiB past %d MiB)\n",
 			cronLogPath(), float64(info.Size())/(1<<20),
 			cronLogKeepBytes/(1<<20), cronLogMaxBytes/(1<<20))

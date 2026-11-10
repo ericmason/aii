@@ -43,10 +43,15 @@ called out under **Changed** when they happen.
   empty Cursor records wrote thousands of
   `parse composerData: empty value` lines every five minutes, forever.
   Those per-item lines, and the one for a Cursor workspace database
-  with nothing in it, now appear only under `aii index --verbose`. The
-  `cursor: composers seen=… emitted=… skipped=…` summary still prints
-  on every run, and its `skipped` count now includes the records it
-  could not parse, so the three numbers add up.
+  Cursor created and never filled in, now appear only under
+  `aii index --verbose`. Only those two expected cases went quiet: a
+  composer record aii cannot decode, and a workspace database that is
+  locked, unreadable, or holding content aii cannot decode, are still
+  reported on every run. The summary line now reads
+  `cursor: composers seen=… emitted=… skipped=… parse_errors=…`, its
+  `skipped` count includes the records it could not parse, and
+  `parse_errors` counts the ones that failed for a reason worth
+  looking at.
 - `aii search` no longer fails with `fts5: syntax error near "*"` when
   the query contains an uppercase `AND`, `OR`, or `NOT`. These words
   now work as boolean operators between terms, so

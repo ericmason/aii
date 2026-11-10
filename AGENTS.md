@@ -167,6 +167,15 @@ summary — through `logx.Verbosef`, which prints only under
 one summary line a source writes per scan, and count every item in
 that summary so a reader can tell nothing went missing.
 
+Quiet one named condition, never a whole error path. A helper that
+returns both "this record is empty" and "this database is locked" has
+to tell them apart for you: give the expected case a sentinel error,
+match it with `errors.Is`, and let everything else print. Reading the
+error's text is not telling them apart — check the catalog, the file,
+or whatever states the condition directly. `errEmptyValue` and
+`errNoItemTable` in `internal/source/cursor/cursor.go` are the
+examples.
+
 `aii index` trims `cron.log` to its last 1 MiB once it passes 8 MiB
 (`trimLogFile` in `cmd/aii/cron.go`). The trim rewrites the file in
 place, because launchd and the crontab `>>` redirect both hold it open
