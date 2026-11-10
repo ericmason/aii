@@ -44,3 +44,16 @@ type Source interface {
 	Name() string
 	Scan(ctx context.Context, db *store.DB, full bool, out chan<- Batch) error
 }
+
+// FullForFile reports whether one file must be read from the start even
+// on an incremental run. That is either because the run is a full one,
+// or because a previous run could not write this file's batch and
+// marked its state: the stored mtime and size still match the file, so
+// the usual "unchanged since last run" check would skip it and the
+// messages would never be indexed.
+//
+// Every Source calls it right after reading the file's IndexState and
+// uses the result in place of the full flag it was passed.
+func FullForFile(full bool, prev *store.IndexState) bool {
+	return full || (prev != nil && prev.NeedsReindex)
+}

@@ -181,7 +181,10 @@ func (s *Source) scanDB(ctx context.Context, db *store.DB, path string, full boo
 		if err != nil {
 			return fmt.Errorf("get state: %w", err)
 		}
-		if !full && prev != nil && prev.Fingerprint == sr.Fingerprint {
+		// One session of this file may be marked for reindex while the
+		// rest are not, so the decision is per session, not per file.
+		sessionFull := source.FullForFile(full, prev)
+		if !sessionFull && prev != nil && prev.Fingerprint == sr.Fingerprint {
 			skipped++
 			continue
 		}
@@ -217,7 +220,7 @@ func (s *Source) scanDB(ctx context.Context, db *store.DB, path string, full boo
 			Messages: msgs,
 			State:    store.IndexState{SourcePath: sourcePath, Fingerprint: sr.Fingerprint},
 			// The whole session is re-read, so replace what we had.
-			Truncate: prev != nil || full,
+			Truncate: prev != nil || sessionFull,
 		}
 		select {
 		case <-ctx.Done():

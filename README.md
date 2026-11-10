@@ -469,10 +469,18 @@ virtual tables (`messages_fts`, `messages_fts_tri`) are kept in sync
 via triggers. `store.Search` UNIONs both, dedupes by message id, ranks
 sessions by best bm25, and returns the top-K with up to 3 excerpts.
 
-Schema lives in `internal/store/schema.go`. Two idempotent migrations
-run on open: adding a `summary` column, and wiring the trigram triggers
-(the second is the migration that also rebuilds the trigram shadow
-index if it's empty).
+Schema lives in `internal/store/schema.go`. Opening the database applies
+the cheap idempotent migrations: the added columns (`summary`,
+`token_usage.seq`, `index_state.needs_reindex`) and the trigram
+triggers. The rebuilds that read every message — the trigram shadow
+index and the search covering index — run only in `store.OpenForIndex`,
+which `aii index` calls while it holds the index lock. A query command
+would otherwise hold SQLite's single write lock for minutes and the
+index run would lose batches to `SQLITE_BUSY`.
+
+A batch that still cannot be written sets `index_state.needs_reindex`
+for its file, and the next run reads that file from the start instead
+of skipping it as unchanged.
 
 ## Troubleshooting
 

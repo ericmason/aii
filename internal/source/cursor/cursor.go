@@ -636,6 +636,7 @@ func (s *Source) scanComposer(
 	if err != nil {
 		return false, fmt.Errorf("get state: %w", err)
 	}
+	full = source.FullForFile(full, prev)
 
 	if !full && prev != nil && prev.Fingerprint == fp {
 		return false, nil

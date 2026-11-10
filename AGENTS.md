@@ -276,7 +276,21 @@ binary, zero network" promise is the whole design.
 - **External-content FTS gotcha.** `messages_fts` and
   `messages_fts_tri` are external-content tables. `COUNT(*)` delegates
   to `messages`, not the FTS shadow. Use `<table>_docsize` to detect
-  empty indexes — see `migrateTrigram`.
+  empty indexes — see `trigramIndexStale`, and read both counts in one
+  transaction: in separate statements a concurrent writer makes a
+  current index look stale.
+- **Only an index run rebuilds.** `store.Open` applies the cheap
+  migrations; the rebuilds that read every message belong to
+  `store.OpenForIndex`, which runs under the index lock. A query
+  command that rebuilds holds the write lock for minutes and the
+  indexer loses batches to `SQLITE_BUSY`.
+- **A batch is one transaction, and a batch that fails is reindexed.**
+  `indexer.apply` writes the delete, the session, the messages, the
+  usage, and the index state together, retrying while the lock is held.
+  A batch that still fails sets `index_state.needs_reindex` for its
+  file; every source turns that into a from-the-start reparse through
+  `source.FullForFile`. Never advance index state for a batch that did
+  not commit.
 - **Triggers must be rewired, not additive.** `CREATE TRIGGER IF NOT
   EXISTS` is a no-op when the trigger exists with a different body.
   The trigram migration drops and recreates all three message

@@ -363,6 +363,7 @@ func (s *Source) scanTask(ctx context.Context, db *store.DB, full bool, out chan
 	if err != nil {
 		return fmt.Errorf("get state: %w", err)
 	}
+	full = source.FullForFile(full, prev)
 	if !full && prev != nil && prev.Size == size && prev.MtimeNs == mtimeNs {
 		return nil
 	}

@@ -8,6 +8,30 @@ called out under **Changed** when they happen.
 
 ## [Unreleased]
 
+### Fixed
+- `aii index` no longer loses sessions when another aii command is
+  running. A query command used to rebuild the trigram index and the
+  search covering index on open, which reads every message and holds
+  SQLite's write lock for minutes on a large database; every batch the
+  index run tried to write in that window failed with `database is
+  locked (SQLITE_BUSY)`, was logged, and was dropped. Those rebuilds
+  now belong to `aii index`, which runs them while it holds the index
+  lock.
+- The check for a stale trigram index no longer fires spuriously. It
+  compared two counts read in separate statements, so a concurrent
+  writer inserting between them made a current index look empty and
+  triggered a full rebuild.
+- A batch `aii index` cannot write is retried, and then recorded
+  instead of dropped: the file is marked so the next run reads it from
+  the start, even though its size and modification time have not
+  changed. Before, the next incremental run skipped the file as
+  unchanged and its messages and token usage were never indexed.
+- Each batch is now written in one transaction. A batch that failed
+  partway through used to leave the sessions it had already deleted
+  gone, along with the file's index state.
+- `aii index` exits non-zero and names the files when it cannot write
+  a batch, and its summary line reports how many batches were deferred.
+
 ## [0.6.0] - 2026-11-10
 
 ### Added

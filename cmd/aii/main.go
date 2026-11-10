@@ -175,7 +175,10 @@ func cmdIndex(ctx context.Context, args []string) error {
 	// it. Safe under the index lock: no other run is writing.
 	trimCronLog()
 
-	db, err := store.Open(store.DefaultPath())
+	// OpenForIndex, not Open: the one-off rebuilds that scan every
+	// message belong to the process holding the index lock, where they
+	// cannot stall another writer. Query commands skip them.
+	db, err := store.OpenForIndex(store.DefaultPath())
 	if err != nil {
 		return err
 	}
@@ -196,18 +199,16 @@ func cmdIndex(ctx context.Context, args []string) error {
 		}
 	}
 
-	stats, err := indexer.Run(ctx, db, sources, indexer.Options{
+	stats, runErr := indexer.Run(ctx, db, sources, indexer.Options{
 		Full:    *full,
 		Verbose: *verbose,
 		Redact:  !*noRedact,
 	})
-	if err != nil {
-		return err
-	}
 	markIndexed()
 	if !*quiet {
-		fmt.Printf("indexed %d sessions, %d messages from %d sources in %s (%d errors)\n",
-			stats.SessionsTouch, stats.MessagesAdded, stats.Sources, stats.Duration.Truncate(time.Millisecond), stats.Errors)
+		fmt.Printf("indexed %d sessions, %d messages from %d sources in %s (%d errors, %d deferred)\n",
+			stats.SessionsTouch, stats.MessagesAdded, stats.Sources, stats.Duration.Truncate(time.Millisecond),
+			stats.Errors, stats.Deferred)
 	}
 
 	if *verbose {
@@ -226,7 +227,9 @@ func cmdIndex(ctx context.Context, args []string) error {
 	} else {
 		db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
 	}
-	return nil
+	// Checkpoint first, then report: a run with deferred batches exits
+	// non-zero, and leaving the WAL unchecked would compound it.
+	return runErr
 }
 
 func selectSources(which string) ([]source.Source, error) {

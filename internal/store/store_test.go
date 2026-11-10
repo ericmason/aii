@@ -16,9 +16,9 @@ import (
 // schema's WAL pragmas exercise the real open path.
 func openTestDB(t *testing.T) *DB {
 	t.Helper()
-	db, err := Open(filepath.Join(t.TempDir(), "aii.db"))
+	db, err := OpenForIndex(filepath.Join(t.TempDir(), "aii.db"))
 	if err != nil {
-		t.Fatalf("Open: %v", err)
+		t.Fatalf("OpenForIndex: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	return db
@@ -395,14 +395,14 @@ func equalInt64(a, b []int64) bool {
 
 func sprintf(format string, args ...any) string { return fmt.Sprintf(format, args...) }
 
-// Open must not fail while another process holds the write lock, for
-// example while it builds the search index on a large database, and
-// Search must work until the index exists.
+// An index run must not fail while another process holds the write
+// lock, for example while it builds the search index on a large
+// database, and Search must work until the index exists.
 func TestOpen_SearchIndexWhileDatabaseLocked(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "aii.db")
-	db, err := Open(path)
+	db, err := OpenForIndex(path)
 	if err != nil {
-		t.Fatalf("Open: %v", err)
+		t.Fatalf("OpenForIndex: %v", err)
 	}
 	sid := seed(t, db, &Session{
 		Agent: "claudecode", UID: "sess-lock", Workspace: "repo",
@@ -436,9 +436,9 @@ func TestOpen_SearchIndexWhileDatabaseLocked(t *testing.T) {
 		t.Fatalf("BEGIN IMMEDIATE: %v", err)
 	}
 
-	db2, err := Open(path)
+	db2, err := OpenForIndex(path)
 	if err != nil {
-		t.Fatalf("Open while locked: %v", err)
+		t.Fatalf("OpenForIndex while locked: %v", err)
 	}
 	defer db2.Close()
 	if ok, err := indexExists(db2, searchIndexName); err != nil || ok {
@@ -460,10 +460,11 @@ func TestOpen_SearchIndexWhileDatabaseLocked(t *testing.T) {
 		t.Errorf("results differ without the index:\n got %+v\nwant %+v", got, want)
 	}
 
-	// A later Open builds the index, and the earlier handle starts using it.
-	db3, err := Open(path)
+	// A later index run builds the index, and the earlier handle starts
+	// using it.
+	db3, err := OpenForIndex(path)
 	if err != nil {
-		t.Fatalf("Open after unlock: %v", err)
+		t.Fatalf("OpenForIndex after unlock: %v", err)
 	}
 	db3.Close()
 	if ok, err := indexExists(db2, searchIndexName); err != nil || !ok {

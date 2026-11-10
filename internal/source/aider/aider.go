@@ -276,6 +276,7 @@ func scanFile(ctx context.Context, db *store.DB, full bool, out chan<- source.Ba
 	if err != nil {
 		return fmt.Errorf("get state: %w", err)
 	}
+	full = source.FullForFile(full, prev)
 
 	start := int64(0)
 	reset := full
