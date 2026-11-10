@@ -8,6 +8,8 @@ called out under **Changed** when they happen.
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-11-10
+
 ### Added
 - `aii compact` merges both full-text indexes and rewrites the
   database without the pages that merge frees. On a 12.7 GiB database
@@ -277,7 +279,8 @@ called out under **Changed** when they happen.
   `aii serve` / MCP server over stdio.
 - CI workflow and `scripts/release.sh` for tagging releases.
 
-[Unreleased]: https://github.com/ericmason/aii/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/ericmason/aii/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/ericmason/aii/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/ericmason/aii/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/ericmason/aii/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/ericmason/aii/compare/v0.5.1...v0.6.0

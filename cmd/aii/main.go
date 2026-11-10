@@ -39,7 +39,7 @@ import (
 	"github.com/ericmason/aii/internal/web"
 )
 
-const aiiVersion = "0.6.2"
+const aiiVersion = "0.6.3"
 
 const usageText = `aii — search every AI chat you've had locally
 
